@@ -1683,11 +1683,27 @@ class GameViewModel {
 
         if let botIdx = bestBotCallIdx, let botCall = bestBotCallType {
             awaitingCall = true
-            Task {
+            let capturedDiscardId = discarded.id
+            Task { @MainActor [weak self] in
                 // Solo play: give the human a real moment to call before the bot
                 // snaps up the discard. Also keeps call announcements readable.
-                try? await Task.sleep(for: .seconds(Double.random(in: 12.0...15.0)))
+                // Shortened from 12-15s — that length made sense for the mahjong
+                // branch above (a human may want to counter-claim mahjong on the
+                // same tile) but was an excessive, unexplained pause for an
+                // ordinary pung/kong/quint, especially when several bot calls
+                // chain together in a row.
+                try? await Task.sleep(for: .seconds(Double.random(in: 3.0...4.5)))
+                guard let self else { return }
                 self.awaitingCall = false
+                // Re-validate before acting: if the discard has moved on (a newer
+                // discard/call window opened, or this one was already resolved some
+                // other way) in the 12-15s we were asleep, blindly calling here would
+                // execute on stale state. Previously this branch had no such check —
+                // unlike the bot-mahjong branch just above it — which is exactly the
+                // kind of gap that produces an occasional stuck game when two
+                // call-eligible discards land close together.
+                guard self.lastDiscardedTile?.id == capturedDiscardId,
+                      botIdx < self.players.count else { return }
                 self.executeCall(playerIndex: botIdx, type: botCall, discarded: discarded)
             }
             return
@@ -1772,12 +1788,20 @@ class GameViewModel {
 
         if let bIdx = botIdx, let bType = botType {
             awaitingCall = true
+            let capturedDiscardId = discarded.id
             Task { @MainActor [weak self] in
                 // Slight delay so the "X discarded …" announcement stays on screen
-                // and players see the bot's call land deliberately.
-                try? await Task.sleep(for: .seconds(Double.random(in: 12.0...15.0)))
+                // and players see the bot's call land deliberately. Shortened from
+                // 12-15s to something that actually matches "slight" — all humans
+                // have already responded by the time this branch runs, so there's
+                // no reason left to wait long here.
+                try? await Task.sleep(for: .seconds(Double.random(in: 3.0...4.5)))
                 guard let self else { return }
                 self.awaitingCall = false
+                // Same staleness guard as the solo bot-call branch: don't act on a
+                // discard that's no longer current by the time the delay elapses.
+                guard self.lastDiscardedTile?.id == capturedDiscardId,
+                      bIdx < self.players.count else { return }
                 self.executeCall(playerIndex: bIdx, type: bType, discarded: discarded)
             }
             return
