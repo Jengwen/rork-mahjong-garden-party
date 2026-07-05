@@ -3145,9 +3145,24 @@ class GameViewModel {
             onlineSyncHandler?()
         }
 
-        // Drive playing-phase progression off of incoming state.
-        // Without this, when a non-host invitee discards, the host receives the new
-        // state but never evaluates calls / advances the turn, so the game stalls.
+        checkForStuckPlayPhase()
+    }
+
+    /// Play-phase self-healing: evaluates calls on a not-yet-processed remote
+    /// discard, finalizes an open call window if we've received a response,
+    /// force-finalizes a call window that's stuck open on the discarder, and
+    /// kicks off a bot's turn if one just became active.
+    ///
+    /// Previously this logic only ran reactively, inline inside
+    /// `applyRemoteState` — meaning it only had a chance to self-heal a stuck
+    /// game if the host happened to receive ANOTHER remote update after the
+    /// one that got it stuck. If nothing else changed (e.g. an invitee
+    /// discarded once and then just waited), the host's own heartbeat kept
+    /// re-broadcasting the same stuck state forever with nothing to trigger
+    /// this check. It's now also called proactively from the host's periodic
+    /// play-phase heartbeat, so the game can self-heal even with no further
+    /// remote activity at all.
+    func checkForStuckPlayPhase() {
         if isOnlineMode, gameStatus == .playing, !showEndGameOverlay {
             if let discarded = lastDiscardedTile,
                lastProcessedDiscardId != discarded.id,

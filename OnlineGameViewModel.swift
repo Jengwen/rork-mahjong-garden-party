@@ -795,6 +795,17 @@ class OnlineGameViewModel {
         do {
             try await service.updateGameState(gameId: gameId, gameData: state, currentTurnUserId: currentTurnUserId, status: status)
             await broadcastStateUpdate(gameId: gameId, status: status, state: state, senderSeat: gameViewModel.localSeatIndex)
+            if status == OnlineGameStatus.completed.rawValue {
+                // Game just finished — sweep both the play-phase action log and any
+                // charleston_passes rows still lingering (e.g. from an earlier retry
+                // that eventually gave up). Detached and best-effort: cleanup failing
+                // must never block the end-game UI. Safe to call from every client
+                // that reaches this write, since delete is idempotent.
+                Task.detached {
+                    await OnlineGameService.shared.deleteGameActions(gameId: gameId)
+                    await OnlineGameService.shared.deleteCharlestonPasses(gameId: gameId, throughPhase: Int.max)
+                }
+            }
         } catch {
             print("⚠️ syncAfterMove: \(error)")
         }
@@ -1615,6 +1626,14 @@ class OnlineGameViewModel {
                     senderSeat: gameViewModel.localSeatIndex
                 )
 
+                // Proactive self-heal: previously this whole check only ran when
+                // `applyRemoteState` fired in response to a fresh incoming update,
+                // so a stuck call window sat frozen forever if nothing else
+                // happened to arrive and trigger it again. Running it here on every
+                // heartbeat tick means the host can recover with no dependence on
+                // further remote activity at all.
+                gameViewModel.checkForStuckPlayPhase()
+
                 // HOST-SIDE PEER PULL & RECONNECT RECOVERY.
                 // When it's not the host's turn (i.e. a remote seat owes us a move),
                 // we can't make progress without their state_update. If broadcasts
@@ -2025,6 +2044,12 @@ class OnlineGameViewModel {
             let currentTurnUserId = userIdForPlayerIndex(gameViewModel.currentPlayerIndex)
             do {
                 try await service.updateGameState(gameId: gameId, gameData: state, currentTurnUserId: currentTurnUserId, status: status)
+                if status == OnlineGameStatus.completed.rawValue {
+                    Task.detached {
+                        await OnlineGameService.shared.deleteGameActions(gameId: gameId)
+                        await OnlineGameService.shared.deleteCharlestonPasses(gameId: gameId, throughPhase: Int.max)
+                    }
+                }
             } catch {
                 print("⚠️ forceResync DB write failed: \(error)")
             }
