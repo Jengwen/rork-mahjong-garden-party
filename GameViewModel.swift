@@ -260,7 +260,7 @@ class GameViewModel {
     var localHasNaturalMatchForDiscard: Bool {
         guard let idx = humanPlayerIndex, idx < players.count,
               let d = lastDiscardedTile, d.suit != .joker else { return false }
-        return players[idx].hand.contains { $0.suit == d.suit && $0.value == d.value }
+        return players[idx].hand.contains { $0.matchesForGrouping(d) }
     }
 
     /// Show the regular call-prompt popup automatically when the player has a
@@ -937,9 +937,44 @@ class GameViewModel {
         }
     }
 
+    /// Whether the Charleston may still be stopped right now.
+    ///
+    /// The stop is a *boundary* decision: it is offered once the 1st Charleston's
+    /// three passes are done, and it stays open only until the 2nd Charleston is
+    /// actually underway. The moment ANY seat — human or bot — commits a pass,
+    /// the window shuts for everyone.
+    ///
+    /// This has to be enforced, not just discouraged. `confirmCharlestonPass`
+    /// physically REMOVES a seat's three tiles from their hand and parks them in
+    /// `charlestonPendingPasses` to await the exchange. If the Charleston is ended
+    /// at that point, the exchange never runs and nothing ever hands those tiles
+    /// on — the seat walks into the play phase three tiles short, with their tiles
+    /// stranded in a dictionary that is about to be discarded.
+    ///
+    /// Deriving the answer from `charlestonPendingPasses` (rather than a separate
+    /// flag) means every client agrees without any extra syncing: the pending map
+    /// is already part of the serialized state, so the button disappears on all
+    /// four devices the instant the first seat commits.
+    var canStopCharleston: Bool {
+        showStopCharlestonOption
+            && gameStatus == .charleston
+            && charlestonPendingPasses.isEmpty
+    }
+
     func stopCharlestonEarly() {
-        // Any player (host, invitee, or solo human) may end the Charleston when the
-        // optional stop prompt is up — between the 1st left and the 2nd left passes.
+        // Enforce the window rather than trusting the button to have been hidden —
+        // a stale tap, a queued gesture, or a remote client racing us can all land
+        // here after someone has already committed a pass.
+        guard canStopCharleston else {
+            print("⛔️ stopCharlestonEarly ignored — 2nd Charleston already underway (pending seats: \(charlestonPendingPasses.keys.sorted()))")
+            return
+        }
+
+        // Ending the Charleston is a table-wide decision, not a local one. Any seat
+        // may make it (host or invitee): `finishCharleston` flips us to `.playing`
+        // and `notifyOnlineSync` writes + broadcasts that state, which every peer
+        // picks up in `applyRemoteState`. GameBoardView gates the Charleston screen
+        // purely on `gameStatus`, so all four clients leave it together.
         showStopCharlestonOption = false
         finishCharleston()
         notifyOnlineSync()
@@ -956,6 +991,39 @@ class GameViewModel {
         // reads players[invitee].isBot to decide whether to auto-play. A stale
         // flag here is what causes the invitee to be skipped post-Charleston.
         selfRectifyBotFlags()
+
+        // STRANDED-PASS RECOVERY. Any seat still holding an uncommitted pass has
+        // already had those tiles REMOVED from their hand by `confirmCharlestonPass`
+        // — they're parked in `charlestonPendingPasses` waiting for an exchange that
+        // is now never going to run. Hand them straight back, or that seat enters the
+        // play phase three tiles short.
+        //
+        // `canStopCharleston` prevents the ordinary route into this state, but two
+        // clients can still race — a stop and a pass submission crossing in flight —
+        // so the transition itself has to be safe rather than merely unreachable.
+        //
+        // Dedupe by tile id before returning: a stale remote merge can restore a
+        // seat's pre-pass hand while STILL carrying their pendingPass entry (the same
+        // read-modify-write race the exchange path guards against), and blindly
+        // appending there would hand the seat the same three tiles twice.
+        if !charlestonPendingPasses.isEmpty {
+            for (seat, tiles) in charlestonPendingPasses where seat >= 0 && seat < players.count {
+                guard !tiles.isEmpty else { continue }
+                let alreadyHeld = Set(players[seat].hand.map { $0.id })
+                let toReturn = tiles.filter { !alreadyHeld.contains($0.id) }
+                guard !toReturn.isEmpty else { continue }
+                players[seat].hand.append(contentsOf: toReturn)
+                players[seat].hand.sort { sortTile($0) < sortTile($1) }
+                print("↩️ finishCharleston: returned \(toReturn.count) stranded pass tile(s) to seat \(seat)")
+            }
+            charlestonPendingPasses = [:]
+        }
+
+        // Clear every Charleston-only surface so no client is left sitting behind a
+        // "waiting for others" or courtesy screen after the table has moved on.
+        charlestonSelectedIndices = []
+        showCourtesyOptions = false
+        showStopCharlestonOption = false
 
         // DEFENSIVE HAND-SIZE CAP. No player may enter the play phase with more
         // than 13 tiles — East draws their 14th on the first turn. A stale
@@ -1205,7 +1273,7 @@ class GameViewModel {
             return
         }
         let allEligible = selectedTiles.allSatisfy { tile in
-            tile.suit == .joker || (tile.suit == discarded.suit && tile.value == discarded.value)
+            tile.suit == .joker || tile.matchesForGrouping(discarded)
         }
         guard allEligible else {
             invalidMahjongMessage = "Invalid \(type.rawValue): each tile must match the \(discarded.displayName) or be a joker."
@@ -1375,8 +1443,7 @@ class GameViewModel {
 
     private func executePung(playerIndex: Int, discarded: MahjongTile) {
         let matchingIndices = players[playerIndex].hand.indices.filter {
-            players[playerIndex].hand[$0].suit == discarded.suit &&
-            players[playerIndex].hand[$0].value == discarded.value
+            players[playerIndex].hand[$0].matchesForGrouping(discarded)
         }
 
         var exposedSet: [MahjongTile] = [discarded]
@@ -1410,8 +1477,7 @@ class GameViewModel {
 
     private func executeKong(playerIndex: Int, discarded: MahjongTile) {
         let matchingIndices = players[playerIndex].hand.indices.filter {
-            players[playerIndex].hand[$0].suit == discarded.suit &&
-            players[playerIndex].hand[$0].value == discarded.value
+            players[playerIndex].hand[$0].matchesForGrouping(discarded)
         }
 
         var exposedSet: [MahjongTile] = [discarded]
@@ -1445,8 +1511,7 @@ class GameViewModel {
 
     private func executeQuint(playerIndex: Int, discarded: MahjongTile) {
         let matchingIndices = players[playerIndex].hand.indices.filter {
-            players[playerIndex].hand[$0].suit == discarded.suit &&
-            players[playerIndex].hand[$0].value == discarded.value
+            players[playerIndex].hand[$0].matchesForGrouping(discarded)
         }
 
         var exposedSet: [MahjongTile] = [discarded]
@@ -1485,7 +1550,7 @@ class GameViewModel {
         // NMJL rule: a discarded Joker can never be called for any reason.
         if discarded.suit == .joker { return [] }
         let matchCount = players[i].hand.filter {
-            $0.suit == discarded.suit && $0.value == discarded.value
+            $0.matchesForGrouping(discarded)
         }.count
         let jokerCount = players[i].hand.filter { $0.suit == .joker }.count
         var calls: [CallType] = []
@@ -1816,7 +1881,7 @@ class GameViewModel {
 
         let tileKey = TileKey(suit: discarded.suit, value: discarded.value)
         let matchCount = players[botIndex].hand.filter {
-            $0.suit == discarded.suit && $0.value == discarded.value
+            $0.matchesForGrouping(discarded)
         }.count
 
         for group in target.groups {
@@ -1950,7 +2015,7 @@ class GameViewModel {
                 if let jIdx = players[pIdx].exposedSets[sIdx].firstIndex(where: { $0.suit == .joker }) {
                     let nonJokerInSet = players[pIdx].exposedSets[sIdx].first { $0.suit != .joker }
                     if let ref = nonJokerInSet,
-                       ref.suit == selectedTile.suit && ref.value == selectedTile.value {
+                       ref.matchesForGrouping(selectedTile) {
                         let jokerTile = players[pIdx].exposedSets[sIdx][jIdx]
                         players[pIdx].exposedSets[sIdx][jIdx] = players[playerIdx].hand[index]
                         players[playerIdx].hand[index] = jokerTile
@@ -1984,7 +2049,7 @@ class GameViewModel {
                 guard set.contains(where: { $0.suit == .joker }) else { continue }
                 let nonJoker = set.first { $0.suit != .joker }
                 guard let ref = nonJoker else { continue }
-                if players[playerIndex].hand.contains(where: { $0.suit == ref.suit && $0.value == ref.value }) {
+                if players[playerIndex].hand.contains(where: { $0.matchesForGrouping(ref) }) {
                     return true
                 }
             }
@@ -2154,7 +2219,7 @@ class GameViewModel {
                 for sIdx in 0..<players[pIdx].exposedSets.count {
                     guard let jIdx = players[pIdx].exposedSets[sIdx].firstIndex(where: { $0.suit == .joker }) else { continue }
                     guard let ref = players[pIdx].exposedSets[sIdx].first(where: { $0.suit != .joker }) else { continue }
-                    if let handIdx = players[botIdx].hand.firstIndex(where: { $0.suit == ref.suit && $0.value == ref.value }) {
+                    if let handIdx = players[botIdx].hand.firstIndex(where: { $0.matchesForGrouping(ref) }) {
                         let jokerTile = players[pIdx].exposedSets[sIdx][jIdx]
                         players[pIdx].exposedSets[sIdx][jIdx] = players[botIdx].hand[handIdx]
                         players[botIdx].hand[handIdx] = jokerTile
