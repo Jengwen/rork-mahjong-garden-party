@@ -260,7 +260,7 @@ class GameViewModel {
     var localHasNaturalMatchForDiscard: Bool {
         guard let idx = humanPlayerIndex, idx < players.count,
               let d = lastDiscardedTile, d.suit != .joker else { return false }
-        return players[idx].hand.contains { $0.matchesForGrouping(d) }
+        return players[idx].hand.contains { $0.suit == d.suit && $0.value == d.value }
     }
 
     /// Show the regular call-prompt popup automatically when the player has a
@@ -1205,7 +1205,7 @@ class GameViewModel {
             return
         }
         let allEligible = selectedTiles.allSatisfy { tile in
-            tile.suit == .joker || tile.matchesForGrouping(discarded)
+            tile.suit == .joker || (tile.suit == discarded.suit && tile.value == discarded.value)
         }
         guard allEligible else {
             invalidMahjongMessage = "Invalid \(type.rawValue): each tile must match the \(discarded.displayName) or be a joker."
@@ -1375,7 +1375,8 @@ class GameViewModel {
 
     private func executePung(playerIndex: Int, discarded: MahjongTile) {
         let matchingIndices = players[playerIndex].hand.indices.filter {
-            players[playerIndex].hand[$0].matchesForGrouping(discarded)
+            players[playerIndex].hand[$0].suit == discarded.suit &&
+            players[playerIndex].hand[$0].value == discarded.value
         }
 
         var exposedSet: [MahjongTile] = [discarded]
@@ -1409,7 +1410,8 @@ class GameViewModel {
 
     private func executeKong(playerIndex: Int, discarded: MahjongTile) {
         let matchingIndices = players[playerIndex].hand.indices.filter {
-            players[playerIndex].hand[$0].matchesForGrouping(discarded)
+            players[playerIndex].hand[$0].suit == discarded.suit &&
+            players[playerIndex].hand[$0].value == discarded.value
         }
 
         var exposedSet: [MahjongTile] = [discarded]
@@ -1443,7 +1445,8 @@ class GameViewModel {
 
     private func executeQuint(playerIndex: Int, discarded: MahjongTile) {
         let matchingIndices = players[playerIndex].hand.indices.filter {
-            players[playerIndex].hand[$0].matchesForGrouping(discarded)
+            players[playerIndex].hand[$0].suit == discarded.suit &&
+            players[playerIndex].hand[$0].value == discarded.value
         }
 
         var exposedSet: [MahjongTile] = [discarded]
@@ -1482,7 +1485,7 @@ class GameViewModel {
         // NMJL rule: a discarded Joker can never be called for any reason.
         if discarded.suit == .joker { return [] }
         let matchCount = players[i].hand.filter {
-            $0.matchesForGrouping(discarded)
+            $0.suit == discarded.suit && $0.value == discarded.value
         }.count
         let jokerCount = players[i].hand.filter { $0.suit == .joker }.count
         var calls: [CallType] = []
@@ -1813,7 +1816,7 @@ class GameViewModel {
 
         let tileKey = TileKey(suit: discarded.suit, value: discarded.value)
         let matchCount = players[botIndex].hand.filter {
-            $0.matchesForGrouping(discarded)
+            $0.suit == discarded.suit && $0.value == discarded.value
         }.count
 
         for group in target.groups {
@@ -1947,7 +1950,7 @@ class GameViewModel {
                 if let jIdx = players[pIdx].exposedSets[sIdx].firstIndex(where: { $0.suit == .joker }) {
                     let nonJokerInSet = players[pIdx].exposedSets[sIdx].first { $0.suit != .joker }
                     if let ref = nonJokerInSet,
-                       ref.matchesForGrouping(selectedTile) {
+                       ref.suit == selectedTile.suit && ref.value == selectedTile.value {
                         let jokerTile = players[pIdx].exposedSets[sIdx][jIdx]
                         players[pIdx].exposedSets[sIdx][jIdx] = players[playerIdx].hand[index]
                         players[playerIdx].hand[index] = jokerTile
@@ -1981,7 +1984,7 @@ class GameViewModel {
                 guard set.contains(where: { $0.suit == .joker }) else { continue }
                 let nonJoker = set.first { $0.suit != .joker }
                 guard let ref = nonJoker else { continue }
-                if players[playerIndex].hand.contains(where: { $0.matchesForGrouping(ref) }) {
+                if players[playerIndex].hand.contains(where: { $0.suit == ref.suit && $0.value == ref.value }) {
                     return true
                 }
             }
@@ -2151,7 +2154,7 @@ class GameViewModel {
                 for sIdx in 0..<players[pIdx].exposedSets.count {
                     guard let jIdx = players[pIdx].exposedSets[sIdx].firstIndex(where: { $0.suit == .joker }) else { continue }
                     guard let ref = players[pIdx].exposedSets[sIdx].first(where: { $0.suit != .joker }) else { continue }
-                    if let handIdx = players[botIdx].hand.firstIndex(where: { $0.matchesForGrouping(ref) }) {
+                    if let handIdx = players[botIdx].hand.firstIndex(where: { $0.suit == ref.suit && $0.value == ref.value }) {
                         let jokerTile = players[pIdx].exposedSets[sIdx][jIdx]
                         players[pIdx].exposedSets[sIdx][jIdx] = players[botIdx].hand[handIdx]
                         players[botIdx].hand[handIdx] = jokerTile
