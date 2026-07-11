@@ -207,18 +207,30 @@ class OnlineGameService {
         return rows
     }
 
-    /// Best-effort cleanup of pass rows once the round has advanced. Failures
-    /// are non-fatal — stale rows are filtered out by phase mismatch anyway.
+    /// Best-effort cleanup of pass rows once the round has advanced. Stale rows
+    /// are also filtered out by phase mismatch at read time, so this is purely
+    /// a table-size optimization, not correctness-critical — but a bare "log
+    /// and forget" on failure meant a single transient network blip silently
+    /// leaked rows for that game forever. One retry after a short backoff
+    /// covers the common transient case; a repeat failure is still logged
+    /// (nothing here is worth blocking gameplay to surface further).
     func deleteCharlestonPasses(gameId: String, throughPhase: Int) async {
-        do {
-            try await client
-                .from("charleston_passes")
-                .delete()
-                .eq("game_id", value: gameId)
-                .lte("phase", value: throughPhase)
-                .execute()
-        } catch {
-            print("⚠️ deleteCharlestonPasses: \(error)")
+        for attempt in 0..<2 {
+            do {
+                try await client
+                    .from("charleston_passes")
+                    .delete()
+                    .eq("game_id", value: gameId)
+                    .lte("phase", value: throughPhase)
+                    .execute()
+                return
+            } catch {
+                if attempt == 0 {
+                    try? await Task.sleep(for: .seconds(2))
+                } else {
+                    print("⚠️ deleteCharlestonPasses: failed after retry: \(error)")
+                }
+            }
         }
     }
 
@@ -291,15 +303,29 @@ class OnlineGameService {
     }
 
     /// Best-effort cleanup of action rows when a game completes.
+    ///
+    /// NOTE: as of the multiplayer cleanup pass, this is now actually called
+    /// (from `OnlineGameViewModel.syncAfterMove` when a status write of
+    /// "completed" succeeds) — previously this function existed but had no
+    /// call site anywhere in the app, so `game_actions` rows accumulated
+    /// forever for every game ever played. Same one-retry pattern as
+    /// `deleteCharlestonPasses` so a transient failure doesn't leak rows.
     func deleteGameActions(gameId: String) async {
-        do {
-            try await client
-                .from("game_actions")
-                .delete()
-                .eq("game_id", value: gameId)
-                .execute()
-        } catch {
-            print("⚠️ deleteGameActions: \(error)")
+        for attempt in 0..<2 {
+            do {
+                try await client
+                    .from("game_actions")
+                    .delete()
+                    .eq("game_id", value: gameId)
+                    .execute()
+                return
+            } catch {
+                if attempt == 0 {
+                    try? await Task.sleep(for: .seconds(2))
+                } else {
+                    print("⚠️ deleteGameActions: failed after retry: \(error)")
+                }
+            }
         }
     }
 
