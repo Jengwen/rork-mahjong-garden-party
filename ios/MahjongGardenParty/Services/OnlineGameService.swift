@@ -207,18 +207,30 @@ class OnlineGameService {
         return rows
     }
 
-    /// Best-effort cleanup of pass rows once the round has advanced. Failures
-    /// are non-fatal — stale rows are filtered out by phase mismatch anyway.
+    /// Best-effort cleanup of pass rows once the round has advanced. Stale rows
+    /// are also filtered out by phase mismatch at read time, so this is purely
+    /// a table-size optimization, not correctness-critical — but a bare "log
+    /// and forget" on failure meant a single transient network blip silently
+    /// leaked rows for that game forever. One retry after a short backoff
+    /// covers the common transient case; a repeat failure is still logged
+    /// (nothing here is worth blocking gameplay to surface further).
     func deleteCharlestonPasses(gameId: String, throughPhase: Int) async {
-        do {
-            try await client
-                .from("charleston_passes")
-                .delete()
-                .eq("game_id", value: gameId)
-                .lte("phase", value: throughPhase)
-                .execute()
-        } catch {
-            print("⚠️ deleteCharlestonPasses: \(error)")
+        for attempt in 0..<2 {
+            do {
+                try await client
+                    .from("charleston_passes")
+                    .delete()
+                    .eq("game_id", value: gameId)
+                    .lte("phase", value: throughPhase)
+                    .execute()
+                return
+            } catch {
+                if attempt == 0 {
+                    try? await Task.sleep(for: .seconds(2))
+                } else {
+                    print("⚠️ deleteCharlestonPasses: failed after retry: \(error)")
+                }
+            }
         }
     }
 
@@ -291,15 +303,29 @@ class OnlineGameService {
     }
 
     /// Best-effort cleanup of action rows when a game completes.
+    ///
+    /// NOTE: as of the multiplayer cleanup pass, this is now actually called
+    /// (from `OnlineGameViewModel.syncAfterMove` when a status write of
+    /// "completed" succeeds) — previously this function existed but had no
+    /// call site anywhere in the app, so `game_actions` rows accumulated
+    /// forever for every game ever played. Same one-retry pattern as
+    /// `deleteCharlestonPasses` so a transient failure doesn't leak rows.
     func deleteGameActions(gameId: String) async {
-        do {
-            try await client
-                .from("game_actions")
-                .delete()
-                .eq("game_id", value: gameId)
-                .execute()
-        } catch {
-            print("⚠️ deleteGameActions: \(error)")
+        for attempt in 0..<2 {
+            do {
+                try await client
+                    .from("game_actions")
+                    .delete()
+                    .eq("game_id", value: gameId)
+                    .execute()
+                return
+            } catch {
+                if attempt == 0 {
+                    try? await Task.sleep(for: .seconds(2))
+                } else {
+                    print("⚠️ deleteGameActions: failed after retry: \(error)")
+                }
+            }
         }
     }
 
@@ -371,29 +397,51 @@ class OnlineGameService {
             .execute()
     }
 
+    /// Batched replacement for the previous N+1 implementation, which did
+    /// `1 + 2×N` sequential round trips (one `fetchGame` + one `fetchParticipants`
+    /// awaited per game, one at a time, in a for-loop). This does 3 total: the
+    /// caller's own participant rows, then the matching games and the full
+    /// participant lists for those games fetched concurrently. Round-trip count
+    /// no longer scales with how many active games the user has.
     func fetchMyActiveGames() async throws -> [OnlineGameSummary] {
         guard let userId = currentUserId else { return [] }
 
-        let participants: [GameParticipant] = try await client
+        let myParticipantRows: [GameParticipant] = try await client
             .from("game_participants")
             .select()
             .eq("user_id", value: userId)
             .execute()
             .value
 
-        var summaries: [OnlineGameSummary] = []
-        for participant in participants {
-            guard let game = try await fetchGame(gameId: participant.gameId) else { continue }
-            guard game.status != OnlineGameStatus.completed.rawValue else { continue }
-            let allParticipants = try await fetchParticipants(gameId: participant.gameId)
-            let isMyTurn = game.currentTurnUserId == userId
-            summaries.append(OnlineGameSummary(
-                id: game.id ?? participant.gameId,
+        let gameIds = Array(Set(myParticipantRows.map(\.gameId)))
+        guard !gameIds.isEmpty else { return [] }
+
+        async let gamesTask: [OnlineGame] = client
+            .from("online_games")
+            .select()
+            .in("id", value: gameIds)
+            .neq("status", value: OnlineGameStatus.completed.rawValue)
+            .execute()
+            .value
+        async let participantsTask: [GameParticipant] = client
+            .from("game_participants")
+            .select()
+            .in("game_id", value: gameIds)
+            .execute()
+            .value
+
+        let (games, allParticipants) = try await (gamesTask, participantsTask)
+        let participantsByGame = Dictionary(grouping: allParticipants, by: \.gameId)
+
+        let summaries: [OnlineGameSummary] = games.compactMap { game in
+            guard let gameId = game.id else { return nil }
+            return OnlineGameSummary(
+                id: gameId,
                 game: game,
-                participants: allParticipants,
-                isMyTurn: isMyTurn,
+                participants: participantsByGame[gameId] ?? [],
+                isMyTurn: game.currentTurnUserId == userId,
                 myUserId: userId
-            ))
+            )
         }
         return summaries.sorted { ($0.game.updatedAt ?? "") > ($1.game.updatedAt ?? "") }
     }
