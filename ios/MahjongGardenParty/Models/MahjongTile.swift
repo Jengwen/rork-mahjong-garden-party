@@ -53,6 +53,27 @@ nonisolated struct MahjongTile: Identifiable, Hashable, Codable, Sendable {
         self.isDiscarded = isDiscarded
     }
 
+    /// Whether this tile can stand in for `other` when forming a group
+    /// (pung / kong / quint / exposure), per NMJL matching rules.
+    ///
+    /// NMJL treats all eight Flowers as one interchangeable tile — F1 through F8
+    /// are equivalent for the purpose of building a Flower group. Every other
+    /// suit matches on suit *and* value, as you'd expect.
+    ///
+    /// This distinction is load-bearing: the deck contains exactly ONE copy of
+    /// each flower value (F1…F8), so comparing `value` — which is what the call
+    /// logic did for every suit — meant two flowers could never match each other.
+    /// A player's flower count against a discarded flower was therefore always
+    /// zero, making a discarded flower impossible to call and a flower exposure
+    /// impossible to build.
+    ///
+    /// Jokers are deliberately NOT handled here: joker substitution is a separate
+    /// rule (allowed only in groups of 3+) and every caller layers it on top.
+    func matchesForGrouping(_ other: MahjongTile) -> Bool {
+        if suit == .flower && other.suit == .flower { return true }
+        return suit == other.suit && value == other.value
+    }
+
     var displayName: String {
         switch suit {
         case .wind:
