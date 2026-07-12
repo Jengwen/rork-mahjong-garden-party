@@ -28,14 +28,17 @@ struct GameLobbyView: View {
                 if onlineVM.isQuickMatchGame {
                     quickMatchBanner
                 }
+                // Invite sits ABOVE the seat list: filling the table is the first thing
+                // you do in a fresh lobby, so the action shouldn't be buried under four
+                // seat rows and the diagnostics panel.
+                if !onlineVM.isQuickMatchGame {
+                    inviteSection
+                }
                 seatsSection
                 if showDiagnostics {
                     diagnosticsPanel
                 } else {
                     diagnosticsReopenButton
-                }
-                if !onlineVM.isQuickMatchGame {
-                    inviteSection
                 }
                 if onlineVM.isHost && onlineVM.canStartGame {
                     startButton

@@ -325,7 +325,16 @@ struct AchievementRow: View {
                 Group {
                     if achievement.isUnlocked {
                         Image(systemName: achievement.iconName)
-                            .symbolRenderingMode(.multicolor)
+                            // .monochrome, NOT .multicolor. `.multicolor` makes SF Symbols
+                            // draw with its OWN built-in palette, which overrides
+                            // `foregroundStyle` — so 7 of the 10 badges (trophy, flame,
+                            // sparkles, star, party.popper, medal, crown all ship
+                            // multicolor variants) silently ignored `badgeGradient` and
+                            // rendered as stock Apple yellow, while the 3 without variants
+                            // (person.2, laurel, grid) picked up the real palette. The wall
+                            // came out a mix of generic symbols and tinted ones. Monochrome
+                            // lets the gradient actually land on all ten.
+                            .symbolRenderingMode(.monochrome)
                             .font(.title3)
                             .foregroundStyle(achievement.badgeGradient)
                     } else {
