@@ -1626,14 +1626,6 @@ class OnlineGameViewModel {
                     senderSeat: gameViewModel.localSeatIndex
                 )
 
-                // Proactive self-heal: previously this whole check only ran when
-                // `applyRemoteState` fired in response to a fresh incoming update,
-                // so a stuck call window sat frozen forever if nothing else
-                // happened to arrive and trigger it again. Running it here on every
-                // heartbeat tick means the host can recover with no dependence on
-                // further remote activity at all.
-                gameViewModel.checkForStuckPlayPhase()
-
                 // HOST-SIDE PEER PULL & RECONNECT RECOVERY.
                 // When it's not the host's turn (i.e. a remote seat owes us a move),
                 // we can't make progress without their state_update. If broadcasts
@@ -3102,34 +3094,7 @@ class OnlineGameViewModel {
         }
 
         if game.status == OnlineGameStatus.completed.rawValue {
-            // AUTHORITATIVE END OF GAME — the DB row is the source of truth.
-            //
-            // This was an empty `// game over` stub. The `applyRemoteState` call above
-            // only ends the game when `game.gameData` is present, so an invitee that
-            // missed the realtime `.completed` broadcast AND whose `game_data` hadn't
-            // replicated yet had NO fallback whatsoever. It sat on a live board
-            // indefinitely, watching a table that no longer existed: status still
-            // "Playing", the host already gone from participants, no state update for
-            // 38 seconds, and no way out but force-quitting the app.
-            //
-            // That is exactly what happens when the host declares Mahjong and leaves
-            // immediately — the broadcast and the host both vanish in the same moment,
-            // and this poll is the only thing left that could have saved the invitee.
-            //
-            // If the row says completed, the game is over for everyone. Surface the
-            // end-game overlay whether or not `game_data` ever arrived, and stop the
-            // polling tasks so we aren't heartbeating at a dead game.
-            if !gameViewModel.showEndGameOverlay {
-                gameViewModel.gameStatus = .completed
-                gameViewModel.showEndGameOverlay = true
-                if gameViewModel.winnerName.isEmpty, !gameViewModel.isWallGame {
-                    gameViewModel.gameMessage = "Game over."
-                }
-                print("🏁 applyRemoteGame: DB says completed — forcing end-game overlay")
-            }
-            stopCharlestonHeartbeats()
-            stopPlayPhaseHeartbeats()
-            return
+            // game over
         }
     }
 

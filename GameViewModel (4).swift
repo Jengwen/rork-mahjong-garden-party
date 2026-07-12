@@ -2663,20 +2663,8 @@ class GameViewModel {
         let discardId = lastDiscardedTile?.id
         let stuckAtSeat = lastDiscardPlayerIndex
         callerFollowThroughWatchdog = Task { @MainActor [weak self] in
-            // ABANDONMENT timeout — NOT a decision timer.
-            //
-            // When it fires it downgrades the caller's "called" back to "skip",
-            // force-finalizes, and hands the turn on: the claimed tile snaps back into
-            // the discard pile and the caller loses the exposure entirely. At 25s that
-            // was firing on people who were simply still choosing — tap Kong, then find
-            // THREE matching tiles among thirteen (possibly weighing jokers), then
-            // confirm. Blowing 25s is easy, and the punishment was silently losing the
-            // kong and being skipped.
-            //
-            // 25s -> 60s. This only needs to be short enough to rescue the table from a
-            // caller who genuinely vanished (backgrounded the app, lost the network);
-            // it should never be short enough to guillotine someone who is mid-decision.
-            try? await Task.sleep(for: .seconds(60))
+            // Generous so real humans have time to pick their tiles and confirm.
+            try? await Task.sleep(for: .seconds(25))
             guard let self else { return }
             if Task.isCancelled { return }
             // Bail if the situation already resolved itself (caller exposed, turn
