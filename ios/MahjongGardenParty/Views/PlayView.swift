@@ -9,7 +9,10 @@ struct PlayView: View {
     @State private var showCardPreview: Bool = false
     @State private var showMultiplayerOptions: Bool = false
     @State private var onlineVM = OnlineGameViewModel()
-    @State private var showCreateGame: Bool = false
+    /// Drives the spinner on the Invite Players button while the game is being
+    /// created. Replaces `showCreateGame` — there is no interstitial sheet to show
+    /// any more; the create happens inline on the way to the lobby.
+    @State private var isCreatingGame: Bool = false
     @State private var showLobby: Bool = false
     @State private var isQuickMatching: Bool = false
     @State private var showOnlineGameBoard: Bool = false
@@ -45,6 +48,8 @@ struct PlayView: View {
             .sheet(isPresented: $showMultiplayerOptions) {
                 MultiplayerOptionsSheet(
                     isQuickMatching: $isQuickMatching,
+                    isCreatingGame: $isCreatingGame,
+                    errorMessage: onlineVM.errorMessage,
                     onQuickMatch: {
                         Task {
                             isQuickMatching = true
@@ -62,16 +67,35 @@ struct PlayView: View {
                         }
                     },
                     onInvitePlayers: {
-                        showMultiplayerOptions = false
-                        showCreateGame = true
+                        // Go straight to the lobby. This used to hand off to
+                        // CreateGameSheet, which was just a splash screen with a
+                        // "Create Game" button on it — a second confirmation for a
+                        // choice the player had already made (and, with Quick Match
+                        // hidden, "Invite Players" is the only option on this sheet,
+                        // so it was confirming the only thing they could have picked).
+                        // Create the game here and push the lobby, mirroring the
+                        // quick-match path above.
+                        Task {
+                            isCreatingGame = true
+                            let cardYear = gameViewModel.selectedCardYear.rawValue
+                            let _ = await onlineVM.createGame(
+                                displayName: appViewModel.playerProfile.displayName,
+                                avatarImage: appViewModel.playerProfile.avatarImage,
+                                cardYear: cardYear
+                            )
+                            isCreatingGame = false
+                            // Only advance if the game actually exists — the lobby
+                            // reads currentGameId, so pushing it after a failed create
+                            // would land the player on an empty screen. On failure the
+                            // sheet stays up (showing onlineVM.errorMessage) so they
+                            // can retry.
+                            if onlineVM.currentGameId != nil {
+                                showMultiplayerOptions = false
+                                showLobby = true
+                            }
+                        }
                     }
                 )
-            }
-            .sheet(isPresented: $showCreateGame) {
-                CreateGameSheet(onlineVM: onlineVM, appViewModel: appViewModel, gameViewModel: gameViewModel) {
-                    showCreateGame = false
-                    showLobby = true
-                }
             }
             .navigationDestination(isPresented: $showLobby) {
                 GameLobbyView(onlineVM: onlineVM, gameViewModel: gameViewModel)
@@ -298,6 +322,8 @@ struct MultiplayerOptionsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(ThemeManager.self) private var themeManager
     @Binding var isQuickMatching: Bool
+    @Binding var isCreatingGame: Bool
+    let errorMessage: String?
     let onQuickMatch: () -> Void
     let onInvitePlayers: () -> Void
 
@@ -324,13 +350,30 @@ struct MultiplayerOptionsSheet: View {
                 } label: {
                     OptionCard(
                         title: "Invite Players",
-                        subtitle: "Create a private game and invite friends",
+                        subtitle: isCreatingGame
+                            ? "Setting up your game\u{2026}"
+                            : "Create a private game and invite friends",
                         icon: "person.badge.plus",
                         accent: themeManager.currentTheme.accent,
-                        isLoading: false
+                        isLoading: isCreatingGame
                     )
                 }
                 .buttonStyle(.plain)
+                // The game is created on this tap now, so the button has real work
+                // behind it — block a second tap from creating a duplicate game.
+                .disabled(isCreatingGame)
+
+                // Creation failures used to be invisible here (the old sheet owned
+                // that step). Surface them, since a failed create leaves the player
+                // sitting on this sheet with no explanation.
+                if let errorMessage, !isCreatingGame {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .transition(.opacity)
+                }
 
                 Spacer()
             }

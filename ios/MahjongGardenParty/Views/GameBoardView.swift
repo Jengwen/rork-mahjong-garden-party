@@ -469,7 +469,7 @@ struct GameBoardView: View {
 
     private func isCallEligibleTile(_ tile: MahjongTile) -> Bool {
         guard let discarded = gameViewModel.lastDiscardedTile else { return false }
-        return (tile.suit == discarded.suit && tile.value == discarded.value) || tile.suit == .joker
+        return tile.matchesForGrouping(discarded) || tile.suit == .joker
     }
 
     private var actionBar: some View {

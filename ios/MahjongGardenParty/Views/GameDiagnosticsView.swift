@@ -47,11 +47,13 @@ struct GameDiagnosticsView: View {
                                 }
                             }
                         }
-
-                        recoveryActions
                     }
 
-                    Text("Use these tools only when the game appears stuck or frozen. They re-push your local state to every player and can force the host to advance a stalled call window.")
+                    recoveryActions
+
+                    Text(gameViewModel.isOnlineMode
+                         ? "Use these tools only when the game appears stuck or frozen. They re-push your local state to every player and can force the host to advance a stalled call window."
+                         : "Use Clear Local Call UI only if the game appears stuck on a call prompt that isn't responding.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -89,34 +91,48 @@ struct GameDiagnosticsView: View {
     }
 
     private var looksFrozen: Bool {
-        guard gameViewModel.isOnlineMode else { return false }
-        if let at = onlineVM.lastStateUpdateAt {
-            if Date().timeIntervalSince(at) > 20 { return true }
-        } else if onlineVM.stateUpdatesReceived == 0 {
+        if gameViewModel.isOnlineMode {
+            if let at = onlineVM.lastStateUpdateAt {
+                if Date().timeIntervalSince(at) > 20 { return true }
+            } else if onlineVM.stateUpdatesReceived == 0 {
+                return true
+            }
+            if gameViewModel.callResponseDiscardId != nil && gameViewModel.isOnlineHost {
+                // Host has an open call window — check whether any eligible seat hasn't responded.
+                let waiting = gameViewModel.eligibleCallSeats.filter { gameViewModel.callResponses[$0] == nil }
+                if !waiting.isEmpty { return true }
+            }
+            if gameViewModel.canHostForceAdvanceRemoteTurn { return true }
+            return false
+        }
+
+        // Solo mode has no host/heartbeat watchdog to fall back on — a call
+        // window that's been open a long time with nobody having acted on it
+        // (human missed the prompt, or something upstream left it dangling)
+        // previously had NO detection here at all, since this whole check used
+        // to bail out immediately for non-online games.
+        if gameViewModel.callAvailable, let openedAt = gameViewModel.callWindowOpenedAt,
+           Date().timeIntervalSince(openedAt) > 20 {
             return true
         }
-        if gameViewModel.callResponseDiscardId != nil && gameViewModel.isOnlineHost {
-            // Host has an open call window — check whether any eligible seat hasn't responded.
-            let waiting = gameViewModel.eligibleCallSeats.filter { gameViewModel.callResponses[$0] == nil }
-            if !waiting.isEmpty { return true }
-        }
-        if gameViewModel.canHostForceAdvanceRemoteTurn { return true }
         return false
     }
 
     private var recoveryActions: some View {
         VStack(spacing: 10) {
-            actionButton(
-                title: "Force Sync",
-                systemImage: "arrow.triangle.2.circlepath",
-                tint: .blue
-            ) {
-                lastAction = "Re-broadcasting state…"
-                isWorking = true
-                Task {
-                    await onlineVM.forceResync(gameViewModel: gameViewModel)
-                    lastAction = "State re-broadcast sent."
-                    isWorking = false
+            if gameViewModel.isOnlineMode {
+                actionButton(
+                    title: "Force Sync",
+                    systemImage: "arrow.triangle.2.circlepath",
+                    tint: .blue
+                ) {
+                    lastAction = "Re-broadcasting state…"
+                    isWorking = true
+                    Task {
+                        await onlineVM.forceResync(gameViewModel: gameViewModel)
+                        lastAction = "State re-broadcast sent."
+                        isWorking = false
+                    }
                 }
             }
 
@@ -147,13 +163,29 @@ struct GameDiagnosticsView: View {
             }
 
             actionButton(
-                title: "Clear Local Call UI",
+                title: gameViewModel.isOnlineMode ? "Clear Local Call UI" : "Resolve Stuck Call",
                 systemImage: "xmark.circle.fill",
                 tint: .secondary
             ) {
-                gameViewModel.clearLocalCallWindowState()
-                lastAction = "Cleared local call UI."
+                if gameViewModel.isOnlineMode {
+                    gameViewModel.clearLocalCallWindowState()
+                    lastAction = "Cleared local call UI."
+                } else if gameViewModel.callAvailable {
+                    // Solo mode has no separate "clear without deciding" concept —
+                    // there's only one seat's decision blocking things, so resolving
+                    // it means actually answering "skip" for them, same as tapping
+                    // the Skip button on the call prompt itself. This both clears the
+                    // stuck flags AND advances the turn (executes any pending bot
+                    // call, or moves to the next seat) — clearing flags alone would
+                    // just trade a visible stuck state for a silent one.
+                    gameViewModel.dismissCallOptions()
+                    lastAction = "Call window resolved and turn advanced."
+                } else {
+                    lastAction = "Nothing to resolve — no call window is open."
+                }
             }
+            .disabled(!gameViewModel.isOnlineMode && !gameViewModel.callAvailable)
+            .opacity(!gameViewModel.isOnlineMode && !gameViewModel.callAvailable ? 0.5 : 1)
 
             if let lastAction {
                 Text(lastAction)

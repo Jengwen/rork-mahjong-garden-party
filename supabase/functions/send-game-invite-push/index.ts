@@ -23,7 +23,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 interface InvitePayload {
   receiverId: string;
   gameId: string;
-  senderName: string;
+  // senderName intentionally removed — now derived server-side from the
+  // caller's own player_profiles row instead of trusted from the client.
+  // The client may still send it; it's simply ignored.
 }
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -216,42 +218,98 @@ async function sendApns(
 
 // ---- Request handler -----------------------------------------------------
 
+const corsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers":
+    "authorization, x-client-info, apikey, content-type",
+  "access-control-allow-methods": "POST, OPTIONS",
+};
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...corsHeaders },
+  });
+}
+
 Deno.serve(async (req) => {
-  if (req.method !== "POST") {
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: { "content-type": "application/json" },
-    });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
+  if (req.method !== "POST") {
+    return jsonResponse({ error: "Method not allowed" }, 405);
+  }
+
+  // ---- auth ----
+  // SECURITY: this function previously had NO auth check at all, so anyone
+  // holding just the public anon key (which ships in the app binary) could
+  // call it directly with an arbitrary receiverId/gameId/senderName and send
+  // a real, spoofed push notification to any user — no login required.
+  const authHeader = req.headers.get("authorization") ?? "";
+  const jwt = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  if (!jwt) return jsonResponse({ error: "Missing bearer token" }, 401);
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
+
+  const { data: userData, error: userErr } = await supabase.auth.getUser(jwt);
+  if (userErr || !userData?.user) {
+    return jsonResponse({ error: "Invalid token" }, 401);
+  }
+  const callerId = userData.user.id;
 
   let body: InvitePayload;
   try {
     body = await req.json();
   } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
-      status: 400,
-      headers: { "content-type": "application/json" },
-    });
+    return jsonResponse({ error: "Invalid JSON" }, 400);
   }
 
-  const { receiverId, gameId, senderName } = body ?? ({} as InvitePayload);
-  if (!receiverId || !gameId || !senderName) {
-    return new Response(
-      JSON.stringify({ error: "receiverId, gameId, senderName required" }),
-      { status: 400, headers: { "content-type": "application/json" } },
+  const { receiverId, gameId } = body ?? ({} as InvitePayload);
+  if (!receiverId || !gameId) {
+    return jsonResponse({ error: "receiverId, gameId required" }, 400);
+  }
+
+  // SECURITY: verify a real invite row backs this request instead of trusting
+  // the caller's claims outright — this stops an authenticated-but-malicious
+  // client from push-spamming an arbitrary receiverId with a fabricated
+  // gameId. The insert of this row (in game_invites, sender_id = auth.uid())
+  // is itself RLS-protected, so its existence is a reliable signal.
+  const { data: inviteRow, error: inviteErr } = await supabase
+    .from("game_invites")
+    .select("id")
+    .eq("sender_id", callerId)
+    .eq("receiver_id", receiverId)
+    .eq("game_id", gameId)
+    .limit(1)
+    .maybeSingle();
+  if (inviteErr) {
+    return jsonResponse(
+      { error: "Failed to verify invite", details: inviteErr.message },
+      500,
     );
   }
+  if (!inviteRow) {
+    return jsonResponse({ error: "No matching invite found for caller" }, 403);
+  }
+
+  // SECURITY: derive the displayed sender name server-side from the caller's
+  // own profile rather than trusting the client-supplied `senderName` string
+  // — the client value was otherwise shown verbatim in the push alert text,
+  // letting a caller impersonate anyone ("Apple Support invited you...").
+  const { data: profile } = await supabase
+    .from("player_profiles")
+    .select("display_name")
+    .eq("user_id", callerId)
+    .maybeSingle();
+  const senderName = profile?.display_name?.trim() || "A friend";
 
   if (!APNS_TEAM_ID || !APNS_KEY_ID || !APNS_PRIVATE_KEY || !APNS_BUNDLE_ID) {
-    return new Response(
-      JSON.stringify({ error: "APNs credentials not configured" }),
-      { status: 500, headers: { "content-type": "application/json" } },
-    );
+    return jsonResponse({ error: "APNs credentials not configured" }, 500);
   }
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
 
   const { data: tokens, error: tokensErr } = await supabase
     .from("push_tokens")
@@ -260,17 +318,14 @@ Deno.serve(async (req) => {
     .eq("platform", "ios");
 
   if (tokensErr) {
-    return new Response(
-      JSON.stringify({ error: "Failed to load device tokens", details: tokensErr.message }),
-      { status: 500, headers: { "content-type": "application/json" } },
+    return jsonResponse(
+      { error: "Failed to load device tokens", details: tokensErr.message },
+      500,
     );
   }
 
   if (!tokens || tokens.length === 0) {
-    return new Response(
-      JSON.stringify({ ok: true, delivered: 0, reason: "no device tokens" }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
+    return jsonResponse({ ok: true, delivered: 0, reason: "no device tokens" });
   }
 
   const payload = {
@@ -325,13 +380,10 @@ Deno.serve(async (req) => {
     }),
   );
 
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      delivered: results.filter((r) => r.ok).length,
-      attempted: results.length,
-      results,
-    }),
-    { status: 200, headers: { "content-type": "application/json" } },
-  );
+  return jsonResponse({
+    ok: true,
+    delivered: results.filter((r) => r.ok).length,
+    attempted: results.length,
+    results,
+  });
 });

@@ -795,6 +795,17 @@ class OnlineGameViewModel {
         do {
             try await service.updateGameState(gameId: gameId, gameData: state, currentTurnUserId: currentTurnUserId, status: status)
             await broadcastStateUpdate(gameId: gameId, status: status, state: state, senderSeat: gameViewModel.localSeatIndex)
+            if status == OnlineGameStatus.completed.rawValue {
+                // Game just finished — sweep both the play-phase action log and any
+                // charleston_passes rows still lingering (e.g. from an earlier retry
+                // that eventually gave up). Detached and best-effort: cleanup failing
+                // must never block the end-game UI. Safe to call from every client
+                // that reaches this write, since delete is idempotent.
+                Task.detached {
+                    await OnlineGameService.shared.deleteGameActions(gameId: gameId)
+                    await OnlineGameService.shared.deleteCharlestonPasses(gameId: gameId, throughPhase: Int.max)
+                }
+            }
         } catch {
             print("⚠️ syncAfterMove: \(error)")
         }
@@ -1199,7 +1210,11 @@ class OnlineGameViewModel {
             // sat stuck on the 1st across pass (and similar) because every 10s the
             // reconnect tier would restart the heartbeat with a fresh nil timer.
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(600))
+                // Widened from 600ms now that the online_games RLS self-join bug is
+                // fixed (see migration fix_online_games_rls_self_join_bug) — the direct
+                // postgres_changes subscription on online_games actually delivers to
+                // invitees now, so this heartbeat is a safety net, not the primary path.
+                try? await Task.sleep(for: .seconds(3))
                 if Task.isCancelled { break }
                 guard let self, let gameViewModel else { break }
                 guard self.isHost,
@@ -1462,7 +1477,8 @@ class OnlineGameViewModel {
             let pendingSince = Date()
             var lastReconnectAt: Date = .distantPast
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(600))
+                // Widened from 600ms — safety net now, not primary path (see RLS fix note above).
+                try? await Task.sleep(for: .seconds(3))
                 if Task.isCancelled { break }
                 guard let self, let gameViewModel else { break }
                 guard !self.isHost,
@@ -1594,7 +1610,8 @@ class OnlineGameViewModel {
             }
             var lastReconnectAt: Date = .distantPast
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3))
+                // Widened from 3s — safety net now that direct online_games sync works.
+                try? await Task.sleep(for: .seconds(6))
                 if Task.isCancelled { break }
                 guard let self, let gameViewModel else { break }
                 guard self.isHost,
@@ -1608,6 +1625,14 @@ class OnlineGameViewModel {
                     state: state,
                     senderSeat: gameViewModel.localSeatIndex
                 )
+
+                // Proactive self-heal: previously this whole check only ran when
+                // `applyRemoteState` fired in response to a fresh incoming update,
+                // so a stuck call window sat frozen forever if nothing else
+                // happened to arrive and trigger it again. Running it here on every
+                // heartbeat tick means the host can recover with no dependence on
+                // further remote activity at all.
+                gameViewModel.checkForStuckPlayPhase()
 
                 // HOST-SIDE PEER PULL & RECONNECT RECOVERY.
                 // When it's not the host's turn (i.e. a remote seat owes us a move),
@@ -1674,7 +1699,8 @@ class OnlineGameViewModel {
             var lastSelfPushAt: Date = .distantPast
             var lastDbWriteAt: Date = .distantPast
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
+                // Widened from 2s — safety net now that direct online_games sync works.
+                try? await Task.sleep(for: .seconds(5))
                 if Task.isCancelled { break }
                 guard let self, let gameViewModel else { break }
                 guard !self.isHost,
@@ -1814,7 +1840,8 @@ class OnlineGameViewModel {
             // auto-clear could never fire — exactly the bug where an invitee sat
             // on phase 0 for 100+ seconds while the host was at phase 6.
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(400))
+                // Widened from 400ms — safety net now that direct online_games sync works.
+                try? await Task.sleep(for: .seconds(2))
                 if Task.isCancelled { break }
                 guard let self, let gameViewModel else { break }
                 guard !self.isHost,
@@ -2017,6 +2044,12 @@ class OnlineGameViewModel {
             let currentTurnUserId = userIdForPlayerIndex(gameViewModel.currentPlayerIndex)
             do {
                 try await service.updateGameState(gameId: gameId, gameData: state, currentTurnUserId: currentTurnUserId, status: status)
+                if status == OnlineGameStatus.completed.rawValue {
+                    Task.detached {
+                        await OnlineGameService.shared.deleteGameActions(gameId: gameId)
+                        await OnlineGameService.shared.deleteCharlestonPasses(gameId: gameId, throughPhase: Int.max)
+                    }
+                }
             } catch {
                 print("⚠️ forceResync DB write failed: \(error)")
             }
@@ -3069,7 +3102,34 @@ class OnlineGameViewModel {
         }
 
         if game.status == OnlineGameStatus.completed.rawValue {
-            // game over
+            // AUTHORITATIVE END OF GAME — the DB row is the source of truth.
+            //
+            // This was an empty `// game over` stub. The `applyRemoteState` call above
+            // only ends the game when `game.gameData` is present, so an invitee that
+            // missed the realtime `.completed` broadcast AND whose `game_data` hadn't
+            // replicated yet had NO fallback whatsoever. It sat on a live board
+            // indefinitely, watching a table that no longer existed: status still
+            // "Playing", the host already gone from participants, no state update for
+            // 38 seconds, and no way out but force-quitting the app.
+            //
+            // That is exactly what happens when the host declares Mahjong and leaves
+            // immediately — the broadcast and the host both vanish in the same moment,
+            // and this poll is the only thing left that could have saved the invitee.
+            //
+            // If the row says completed, the game is over for everyone. Surface the
+            // end-game overlay whether or not `game_data` ever arrived, and stop the
+            // polling tasks so we aren't heartbeating at a dead game.
+            if !gameViewModel.showEndGameOverlay {
+                gameViewModel.gameStatus = .completed
+                gameViewModel.showEndGameOverlay = true
+                if gameViewModel.winnerName.isEmpty, !gameViewModel.isWallGame {
+                    gameViewModel.gameMessage = "Game over."
+                }
+                print("🏁 applyRemoteGame: DB says completed — forcing end-game overlay")
+            }
+            stopCharlestonHeartbeats()
+            stopPlayPhaseHeartbeats()
+            return
         }
     }
 
