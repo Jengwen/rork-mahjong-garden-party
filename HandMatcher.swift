@@ -317,17 +317,32 @@ nonisolated struct HandMatcher {
         return checkWin(hand: testHand, exposedSets: exposedSets, card: card) != nil
     }
 
+    /// Fallback call check used when a bot has no target hand assigned yet, so
+    /// there are no groups to reason about — we can only ask "is this call legal at
+    /// all", independent of whether the bot wants it.
+    ///
+    /// Must agree with `GameViewModel.nonMahjongCallsFor` (the human-side rule) or
+    /// bots and humans disagree about what is callable on the same discard.
     private static func basicCallCheck(tile: MahjongTile, hand: [MahjongTile]) -> [CallType] {
         var calls: [CallType] = []
+        // `matchesForGrouping` makes all eight Flowers interchangeable here, so a hand
+        // holding F2 + F7 counts 2 matches against a discarded F5.
         let matchCount = hand.filter { $0.matchesForGrouping(tile) }.count
         let jokerCount = hand.filter { $0.suit == .joker }.count
 
-        if (matchCount + jokerCount) >= 2 && matchCount >= 1 {
-            calls.append(.pung)
-        }
-        if (matchCount + jokerCount) >= 3 && matchCount >= 1 {
-            calls.append(.kong)
-        }
+        // NMJL: an exposure needs at least one natural tile, and the DISCARD ITSELF is
+        // that natural — so jokers from hand may fill the rest, and a player holding
+        // nothing but jokers can still call.
+        //
+        // This previously also required `matchCount >= 1` (a natural in HAND), which
+        // contradicted both the documented rule and the human path in
+        // `nonMahjongCallsFor`: a bot holding 2 jokers and no flowers would decline a
+        // discarded flower that a human in the identical position was offered. The
+        // discard is the natural; nothing more is required.
+        if (matchCount + jokerCount) >= 2 { calls.append(.pung) }
+        if (matchCount + jokerCount) >= 3 { calls.append(.kong) }
+        // Quint was missing entirely, so this path could never surface a 5-tile call.
+        if (matchCount + jokerCount) >= 4 { calls.append(.quint) }
         calls.append(.mahjong)
         return calls
     }
