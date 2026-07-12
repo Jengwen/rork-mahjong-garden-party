@@ -92,8 +92,18 @@ class GameViewModel {
             // Reset the manual-call expansion whenever the call window closes
             // so the next discard starts from a clean state.
             if !callAvailable { manualCallExpanded = false }
+            if callAvailable && !oldValue {
+                callWindowOpenedAt = Date()
+            } else if !callAvailable {
+                callWindowOpenedAt = nil
+            }
         }
     }
+    /// When the current call window (if any) was opened. Used by solo-mode
+    /// freeze detection, which — unlike the online path — has no host/heartbeat
+    /// watchdog to fall back on if a human simply never sees or acts on the
+    /// call prompt.
+    var callWindowOpenedAt: Date?
     var availableCalls: [CallType] = []
     /// When the only path to call is via jokers (no natural matching tile in
     /// hand for the discard), the popup is suppressed in favour of a quieter
@@ -235,8 +245,24 @@ class GameViewModel {
     /// can immediately re-draw before the next player's call lands.
     var isCallWindowOpen: Bool {
         guard let discarded = lastDiscardedTile else { return false }
-        return callResponseDiscardId == discarded.id
-            && (callAvailable || !eligibleCallSeats.isEmpty || awaitingCall || showCallTileSelection)
+
+        // A window we have already finalized is closed, whatever else says otherwise.
+        if lastFinalizedCallDiscardId == discarded.id { return false }
+
+        // AUTHORITATIVE AND TABLE-WIDE. The host owns the call window and nils out
+        // `callResponseDiscardId` — which IS serialized — the instant it finalizes.
+        // So while that field still points at the current discard, SOMEONE may yet
+        // claim it: another human who hasn't answered, or a bot the host is still
+        // deciding for. No seat may draw until it closes, INCLUDING a seat that has
+        // already skipped.
+        //
+        // This condition used to be AND-ed with the local-only signals below, which
+        // meant a client with nothing pending of its own concluded the window was shut
+        // and lit up Draw while the rest of the table was still deciding.
+        if callResponseDiscardId == discarded.id { return true }
+
+        // Local-only signals, for a window this client is still resolving itself.
+        return callAvailable || awaitingCall || showCallTileSelection || !eligibleCallSeats.isEmpty
     }
 
     /// Number of jokers currently in the local human's hand.
@@ -250,7 +276,7 @@ class GameViewModel {
     var localHasNaturalMatchForDiscard: Bool {
         guard let idx = humanPlayerIndex, idx < players.count,
               let d = lastDiscardedTile, d.suit != .joker else { return false }
-        return players[idx].hand.contains { $0.suit == d.suit && $0.value == d.value }
+        return players[idx].hand.contains { $0.matchesForGrouping(d) }
     }
 
     /// Show the regular call-prompt popup automatically when the player has a
@@ -927,9 +953,44 @@ class GameViewModel {
         }
     }
 
+    /// Whether the Charleston may still be stopped right now.
+    ///
+    /// The stop is a *boundary* decision: it is offered once the 1st Charleston's
+    /// three passes are done, and it stays open only until the 2nd Charleston is
+    /// actually underway. The moment ANY seat — human or bot — commits a pass,
+    /// the window shuts for everyone.
+    ///
+    /// This has to be enforced, not just discouraged. `confirmCharlestonPass`
+    /// physically REMOVES a seat's three tiles from their hand and parks them in
+    /// `charlestonPendingPasses` to await the exchange. If the Charleston is ended
+    /// at that point, the exchange never runs and nothing ever hands those tiles
+    /// on — the seat walks into the play phase three tiles short, with their tiles
+    /// stranded in a dictionary that is about to be discarded.
+    ///
+    /// Deriving the answer from `charlestonPendingPasses` (rather than a separate
+    /// flag) means every client agrees without any extra syncing: the pending map
+    /// is already part of the serialized state, so the button disappears on all
+    /// four devices the instant the first seat commits.
+    var canStopCharleston: Bool {
+        showStopCharlestonOption
+            && gameStatus == .charleston
+            && charlestonPendingPasses.isEmpty
+    }
+
     func stopCharlestonEarly() {
-        // Any player (host, invitee, or solo human) may end the Charleston when the
-        // optional stop prompt is up — between the 1st left and the 2nd left passes.
+        // Enforce the window rather than trusting the button to have been hidden —
+        // a stale tap, a queued gesture, or a remote client racing us can all land
+        // here after someone has already committed a pass.
+        guard canStopCharleston else {
+            print("⛔️ stopCharlestonEarly ignored — 2nd Charleston already underway (pending seats: \(charlestonPendingPasses.keys.sorted()))")
+            return
+        }
+
+        // Ending the Charleston is a table-wide decision, not a local one. Any seat
+        // may make it (host or invitee): `finishCharleston` flips us to `.playing`
+        // and `notifyOnlineSync` writes + broadcasts that state, which every peer
+        // picks up in `applyRemoteState`. GameBoardView gates the Charleston screen
+        // purely on `gameStatus`, so all four clients leave it together.
         showStopCharlestonOption = false
         finishCharleston()
         notifyOnlineSync()
@@ -946,6 +1007,39 @@ class GameViewModel {
         // reads players[invitee].isBot to decide whether to auto-play. A stale
         // flag here is what causes the invitee to be skipped post-Charleston.
         selfRectifyBotFlags()
+
+        // STRANDED-PASS RECOVERY. Any seat still holding an uncommitted pass has
+        // already had those tiles REMOVED from their hand by `confirmCharlestonPass`
+        // — they're parked in `charlestonPendingPasses` waiting for an exchange that
+        // is now never going to run. Hand them straight back, or that seat enters the
+        // play phase three tiles short.
+        //
+        // `canStopCharleston` prevents the ordinary route into this state, but two
+        // clients can still race — a stop and a pass submission crossing in flight —
+        // so the transition itself has to be safe rather than merely unreachable.
+        //
+        // Dedupe by tile id before returning: a stale remote merge can restore a
+        // seat's pre-pass hand while STILL carrying their pendingPass entry (the same
+        // read-modify-write race the exchange path guards against), and blindly
+        // appending there would hand the seat the same three tiles twice.
+        if !charlestonPendingPasses.isEmpty {
+            for (seat, tiles) in charlestonPendingPasses where seat >= 0 && seat < players.count {
+                guard !tiles.isEmpty else { continue }
+                let alreadyHeld = Set(players[seat].hand.map { $0.id })
+                let toReturn = tiles.filter { !alreadyHeld.contains($0.id) }
+                guard !toReturn.isEmpty else { continue }
+                players[seat].hand.append(contentsOf: toReturn)
+                players[seat].hand.sort { sortTile($0) < sortTile($1) }
+                print("↩️ finishCharleston: returned \(toReturn.count) stranded pass tile(s) to seat \(seat)")
+            }
+            charlestonPendingPasses = [:]
+        }
+
+        // Clear every Charleston-only surface so no client is left sitting behind a
+        // "waiting for others" or courtesy screen after the table has moved on.
+        charlestonSelectedIndices = []
+        showCourtesyOptions = false
+        showStopCharlestonOption = false
 
         // DEFENSIVE HAND-SIZE CAP. No player may enter the play phase with more
         // than 13 tiles — East draws their 14th on the first turn. A stale
@@ -1195,7 +1289,7 @@ class GameViewModel {
             return
         }
         let allEligible = selectedTiles.allSatisfy { tile in
-            tile.suit == .joker || (tile.suit == discarded.suit && tile.value == discarded.value)
+            tile.suit == .joker || tile.matchesForGrouping(discarded)
         }
         guard allEligible else {
             invalidMahjongMessage = "Invalid \(type.rawValue): each tile must match the \(discarded.displayName) or be a joker."
@@ -1295,6 +1389,14 @@ class GameViewModel {
         callAvailable = false
         availableCalls = []
 
+        // Solo owns the whole decision, so the window is finished the moment it's
+        // dismissed — retire its timeout. (Online must NOT do this here: the host may
+        // still be waiting on other seats, and cancelling would drop the protection.)
+        if !isOnlineMode {
+            callWindowWatchdog?.cancel()
+            callWindowWatchdog = nil
+        }
+
         // Online mode: record this seat's skip and wait for the host to finalize
         // the window. Other humans (and the host) may still call this tile.
         if isOnlineMode {
@@ -1302,12 +1404,32 @@ class GameViewModel {
             if callResponseDiscardId == lastDiscardedTile?.id {
                 callResponses[mySeat] = "skip"
             }
+            // We have ANSWERED, so this seat is no longer deciding.
+            //
+            // `eligibleCallSeats` is LOCAL-ONLY — it is never serialized — so the
+            // host's cleared copy can never reach us. Every "called" path funnels into
+            // `executeCall`, which wipes the set; skip was the one path that didn't.
+            // Leaving our own seat in it pins `isCallWindowOpen` true on this client
+            // FOREVER, which pins `canDrawTile` false forever: the host finalizes,
+            // advances the turn to us, and we can never draw. That is the observed
+            // freeze — invitee seat 1 showing `callAvailable: false, calls: []` but
+            // still `eligible: [1]`, with a dead Draw button on its own turn.
+            eligibleCallSeats.remove(mySeat)
             if isOnlineHost {
                 tryFinalizeCallWindow()
             } else {
                 notifyOnlineSync()
             }
             return
+        }
+
+        // SOLO: this seat is the only decision-maker, so answering closes the window
+        // outright. Without this, a skip left `callResponseDiscardId` still pointing at
+        // the discard and our own seat still sitting in `eligibleCallSeats` — both of
+        // which keep `isCallWindowOpen` true, which keeps `canDrawTile` false. The
+        // player skips a call and then finds Draw dead on their own next turn.
+        if let discarded = lastDiscardedTile {
+            closeCallWindow(for: discarded)
         }
 
         if let botIdx = pendingCallPlayerIndex, let botCall = pendingCallType {
@@ -1356,7 +1478,10 @@ class GameViewModel {
             Task {
                 // Hold the "X called Pung/Kong/Quint!" announcement visible for a
                 // beat before the bot's follow-up discard overwrites the message.
-                try? await Task.sleep(for: .seconds(Double.random(in: 4.5...6.0)))
+                // Trimmed from 4.5-6.0s: this is cosmetic dwell time, and stacked on
+                // top of the 3-4.5s call delay it made a single bot call cost the
+                // table 7.5-10.5s of dead air.
+                try? await Task.sleep(for: .seconds(Double.random(in: 1.5...2.2)))
                 executeBotDiscard(botIdx: playerIndex)
             }
         }
@@ -1365,8 +1490,7 @@ class GameViewModel {
 
     private func executePung(playerIndex: Int, discarded: MahjongTile) {
         let matchingIndices = players[playerIndex].hand.indices.filter {
-            players[playerIndex].hand[$0].suit == discarded.suit &&
-            players[playerIndex].hand[$0].value == discarded.value
+            players[playerIndex].hand[$0].matchesForGrouping(discarded)
         }
 
         var exposedSet: [MahjongTile] = [discarded]
@@ -1400,8 +1524,7 @@ class GameViewModel {
 
     private func executeKong(playerIndex: Int, discarded: MahjongTile) {
         let matchingIndices = players[playerIndex].hand.indices.filter {
-            players[playerIndex].hand[$0].suit == discarded.suit &&
-            players[playerIndex].hand[$0].value == discarded.value
+            players[playerIndex].hand[$0].matchesForGrouping(discarded)
         }
 
         var exposedSet: [MahjongTile] = [discarded]
@@ -1435,8 +1558,7 @@ class GameViewModel {
 
     private func executeQuint(playerIndex: Int, discarded: MahjongTile) {
         let matchingIndices = players[playerIndex].hand.indices.filter {
-            players[playerIndex].hand[$0].suit == discarded.suit &&
-            players[playerIndex].hand[$0].value == discarded.value
+            players[playerIndex].hand[$0].matchesForGrouping(discarded)
         }
 
         var exposedSet: [MahjongTile] = [discarded]
@@ -1475,7 +1597,7 @@ class GameViewModel {
         // NMJL rule: a discarded Joker can never be called for any reason.
         if discarded.suit == .joker { return [] }
         let matchCount = players[i].hand.filter {
-            $0.suit == discarded.suit && $0.value == discarded.value
+            $0.matchesForGrouping(discarded)
         }.count
         let jokerCount = players[i].hand.filter { $0.suit == .joker }.count
         var calls: [CallType] = []
@@ -1586,13 +1708,15 @@ class GameViewModel {
                     localHumanCalls.append(.mahjong)
                 }
 
-                if isOnlineMode {
-                    if calls.isEmpty && !localHumanCalls.contains(.mahjong) {
-                        // No options for me — auto-skip.
-                        if callResponses[i] == nil { callResponses[i] = "skip" }
-                    } else {
-                        eligibleCallSeats.insert(i)
-                    }
+                if calls.isEmpty && !localHumanCalls.contains(.mahjong) {
+                    // No options for me — auto-skip (online) / nothing to record (solo).
+                    if isOnlineMode, callResponses[i] == nil { callResponses[i] = "skip" }
+                } else {
+                    // Populate regardless of mode — this now also feeds solo-mode
+                    // freeze detection in GameDiagnosticsView, which previously had
+                    // no visibility into a stuck local call window because this set
+                    // was only ever filled in online games.
+                    eligibleCallSeats.insert(i)
                 }
             }
         }
@@ -1638,10 +1762,14 @@ class GameViewModel {
             pendingCallPlayerIndex = bestBotCallIdx
             pendingCallType = bestBotCallType
             gameMessage = "\(discarded.displayName) discarded — Call?"
+            // Arm the decision timeout in BOTH modes. Solo previously armed nothing:
+            // we set `callAvailable = true` and returned, and with no watchdog and no
+            // host to finalize, a call window the player never resolved parked the
+            // game permanently. Online always recovered via the host's watchdog.
+            armCallWindowWatchdog()
             // In online mode, host must still wait for OTHER humans even if its
             // own player can call (those other humans may have higher-priority calls).
             if isOnlineHost {
-                armCallWindowWatchdog()
                 tryFinalizeCallWindow()
             }
             return
@@ -1671,17 +1799,58 @@ class GameViewModel {
 
         if let botIdx = bestBotCallIdx, let botCall = bestBotCallType {
             awaitingCall = true
-            Task {
+            let capturedDiscardId = discarded.id
+            Task { @MainActor [weak self] in
                 // Solo play: give the human a real moment to call before the bot
                 // snaps up the discard. Also keeps call announcements readable.
-                try? await Task.sleep(for: .seconds(Double.random(in: 12.0...15.0)))
+                // Shortened from 12-15s — that length made sense for the mahjong
+                // branch above (a human may want to counter-claim mahjong on the
+                // same tile) but was an excessive, unexplained pause for an
+                // ordinary pung/kong/quint, especially when several bot calls
+                // chain together in a row.
+                try? await Task.sleep(for: .seconds(Double.random(in: 3.0...4.5)))
+                guard let self else { return }
                 self.awaitingCall = false
+                // Re-validate before acting: if the discard has moved on (a newer
+                // discard/call window opened, or this one was already resolved some
+                // other way) in the 12-15s we were asleep, blindly calling here would
+                // execute on stale state. Previously this branch had no such check —
+                // unlike the bot-mahjong branch just above it — which is exactly the
+                // kind of gap that produces an occasional stuck game when two
+                // call-eligible discards land close together.
+                guard self.lastDiscardedTile?.id == capturedDiscardId,
+                      botIdx < self.players.count else { return }
                 self.executeCall(playerIndex: botIdx, type: botCall, discarded: discarded)
             }
             return
         }
 
+        // Nobody can claim this discard (solo, or no eligible seat at all), so the
+        // window is over before it began — close it explicitly. Leaving
+        // `callResponseDiscardId` pointing at this discard would keep
+        // `isCallWindowOpen` true and kill Draw for the seat we're about to hand the
+        // turn to.
+        closeCallWindow(for: discarded)
         proceedWithTurn()
+    }
+
+    /// Close the call window for a discard that no longer needs one.
+    ///
+    /// `isCallWindowOpen` treats `callResponseDiscardId` as the AUTHORITATIVE,
+    /// table-wide "someone may still claim this discard" signal — so every path that
+    /// ends a window has to clear it, or `canDrawTile` stays false and the table sits
+    /// with a dead Draw button. The online host does this inside
+    /// `tryFinalizeCallWindow`; solo (which has no host) and the "nobody can call"
+    /// path had no equivalent, and simply walked away leaving the window flagged open.
+    private func closeCallWindow(for discarded: MahjongTile) {
+        callAvailable = false
+        availableCalls = []
+        callResponses = [:]
+        callResponseDiscardId = nil
+        eligibleCallSeats = []
+        lastFinalizedCallDiscardId = discarded.id
+        callWindowWatchdog?.cancel()
+        callWindowWatchdog = nil
     }
 
     /// Host-only: check whether every eligible non-discarder human has responded
@@ -1760,12 +1929,20 @@ class GameViewModel {
 
         if let bIdx = botIdx, let bType = botType {
             awaitingCall = true
+            let capturedDiscardId = discarded.id
             Task { @MainActor [weak self] in
                 // Slight delay so the "X discarded …" announcement stays on screen
-                // and players see the bot's call land deliberately.
-                try? await Task.sleep(for: .seconds(Double.random(in: 12.0...15.0)))
+                // and players see the bot's call land deliberately. Shortened from
+                // 12-15s to something that actually matches "slight" — all humans
+                // have already responded by the time this branch runs, so there's
+                // no reason left to wait long here.
+                try? await Task.sleep(for: .seconds(Double.random(in: 3.0...4.5)))
                 guard let self else { return }
                 self.awaitingCall = false
+                // Same staleness guard as the solo bot-call branch: don't act on a
+                // discard that's no longer current by the time the delay elapses.
+                guard self.lastDiscardedTile?.id == capturedDiscardId,
+                      bIdx < self.players.count else { return }
                 self.executeCall(playerIndex: bIdx, type: bType, discarded: discarded)
             }
             return
@@ -1780,7 +1957,7 @@ class GameViewModel {
 
         let tileKey = TileKey(suit: discarded.suit, value: discarded.value)
         let matchCount = players[botIndex].hand.filter {
-            $0.suit == discarded.suit && $0.value == discarded.value
+            $0.matchesForGrouping(discarded)
         }.count
 
         for group in target.groups {
@@ -1847,7 +2024,7 @@ class GameViewModel {
             Task {
                 // Slower bot thinking so real players have time to read the table
                 // (and to spot any pending call window) before the bot draws.
-                try? await Task.sleep(for: .seconds(Double.random(in: 2.5...4.5)))
+                try? await Task.sleep(for: .seconds(Double.random(in: 1.5...2.5)))
                 executeBotTurn()
             }
         } else {
@@ -1914,7 +2091,7 @@ class GameViewModel {
                 if let jIdx = players[pIdx].exposedSets[sIdx].firstIndex(where: { $0.suit == .joker }) {
                     let nonJokerInSet = players[pIdx].exposedSets[sIdx].first { $0.suit != .joker }
                     if let ref = nonJokerInSet,
-                       ref.suit == selectedTile.suit && ref.value == selectedTile.value {
+                       ref.matchesForGrouping(selectedTile) {
                         let jokerTile = players[pIdx].exposedSets[sIdx][jIdx]
                         players[pIdx].exposedSets[sIdx][jIdx] = players[playerIdx].hand[index]
                         players[playerIdx].hand[index] = jokerTile
@@ -1948,7 +2125,7 @@ class GameViewModel {
                 guard set.contains(where: { $0.suit == .joker }) else { continue }
                 let nonJoker = set.first { $0.suit != .joker }
                 guard let ref = nonJoker else { continue }
-                if players[playerIndex].hand.contains(where: { $0.suit == ref.suit && $0.value == ref.value }) {
+                if players[playerIndex].hand.contains(where: { $0.matchesForGrouping(ref) }) {
                     return true
                 }
             }
@@ -2023,6 +2200,12 @@ class GameViewModel {
     // MARK: - Wall Game
 
     private func declareWallGame() {
+        // Idempotent. This is now reachable from the draw paths AND from the host's
+        // periodic backstop, which can collide in the same tick — and re-running it
+        // would re-broadcast a terminal state. It must also never clobber a Mahjong:
+        // if the game is already completed, whatever ended it stands.
+        guard gameStatus != .completed, !showEndGameOverlay else { return }
+
         gameStatus = .completed
         isWallGame = true
         showEndGameOverlay = true
@@ -2031,9 +2214,18 @@ class GameViewModel {
         gameMessage = "Wall Game! No tiles remaining — nobody wins."
         callAvailable = false
         availableCalls = []
+        awaitingCall = false
+        showCallTileSelection = false
         // CRITICAL: broadcast the end-of-game state so every client surfaces the
         // wall-game overlay. Without this notify, the player who didn't trigger
         // the empty-wall draw never sees the announcement.
+        //
+        // Peers accept this: `gameStatus`, `isWallGame` and `showEndGameOverlay` are
+        // all part of the serialized state, every stale-echo guard in
+        // `applyRemoteState` is scoped to `incomingStatus == .playing` so a
+        // `.completed` packet passes straight through, and once a client has applied
+        // it the COMPLETED IS TERMINAL guard stops any late `.playing` heartbeat from
+        // rolling the ending back.
         notifyOnlineSync()
     }
 
@@ -2118,7 +2310,7 @@ class GameViewModel {
                 for sIdx in 0..<players[pIdx].exposedSets.count {
                     guard let jIdx = players[pIdx].exposedSets[sIdx].firstIndex(where: { $0.suit == .joker }) else { continue }
                     guard let ref = players[pIdx].exposedSets[sIdx].first(where: { $0.suit != .joker }) else { continue }
-                    if let handIdx = players[botIdx].hand.firstIndex(where: { $0.suit == ref.suit && $0.value == ref.value }) {
+                    if let handIdx = players[botIdx].hand.firstIndex(where: { $0.matchesForGrouping(ref) }) {
                         let jokerTile = players[pIdx].exposedSets[sIdx][jIdx]
                         players[pIdx].exposedSets[sIdx][jIdx] = players[botIdx].hand[handIdx]
                         players[botIdx].hand[handIdx] = jokerTile
@@ -2421,7 +2613,17 @@ class GameViewModel {
     /// seconds. Protects against frozen games when an invitee's "skip" response
     /// never reaches the host (network drop, backgrounded app, etc.).
     private func armCallWindowWatchdog() {
-        guard isOnlineHost, isOnlineMode else { return }
+        // Online: host only — it owns call-window finalization.
+        // Solo: always. This guard used to be `isOnlineHost, isOnlineMode`, which
+        // meant solo had NO call-window timeout whatsoever.
+        //
+        // That is the root of the "solo froze on a call" reports. It bites hardest on
+        // a JOKER-ONLY call (2+ jokers, no natural match for the discard), because
+        // that path deliberately suppresses the auto-popup in favour of a small
+        // "Call" button — so there is no visible Skip, nothing signals that the game
+        // is blocked on the player, and if they don't spot the button the table sits
+        // there indefinitely. Online moved on after 25s; solo never did.
+        if isOnlineMode && !isOnlineHost { return }
         // Don't arm if any player has explicitly requested unlimited decide time.
         if anySeatOnHold { return }
         callWindowWatchdog?.cancel()
@@ -2438,7 +2640,15 @@ class GameViewModel {
             // Only fire if we're still waiting on the same discard.
             guard self.lastDiscardedTile?.id == discardId,
                   self.callResponseDiscardId == discardId else { return }
-            self.tryFinalizeCallWindow(forceTimeout: true)
+            if self.isOnlineMode {
+                self.tryFinalizeCallWindow(forceTimeout: true)
+            } else {
+                // Solo has no host to finalize the window. `dismissCallOptions` is the
+                // equivalent: it closes the window and then either executes a bot's
+                // pending call on this discard or advances the turn.
+                print("⏱️ solo call window timed out — auto-skipping")
+                self.dismissCallOptions()
+            }
         }
     }
 
@@ -2453,8 +2663,20 @@ class GameViewModel {
         let discardId = lastDiscardedTile?.id
         let stuckAtSeat = lastDiscardPlayerIndex
         callerFollowThroughWatchdog = Task { @MainActor [weak self] in
-            // Generous so real humans have time to pick their tiles and confirm.
-            try? await Task.sleep(for: .seconds(25))
+            // ABANDONMENT timeout — NOT a decision timer.
+            //
+            // When it fires it downgrades the caller's "called" back to "skip",
+            // force-finalizes, and hands the turn on: the claimed tile snaps back into
+            // the discard pile and the caller loses the exposure entirely. At 25s that
+            // was firing on people who were simply still choosing — tap Kong, then find
+            // THREE matching tiles among thirteen (possibly weighing jokers), then
+            // confirm. Blowing 25s is easy, and the punishment was silently losing the
+            // kong and being skipped.
+            //
+            // 25s -> 60s. This only needs to be short enough to rescue the table from a
+            // caller who genuinely vanished (backgrounded the app, lost the network);
+            // it should never be short enough to guillotine someone who is mid-decision.
+            try? await Task.sleep(for: .seconds(60))
             guard let self else { return }
             if Task.isCancelled { return }
             // Bail if the situation already resolved itself (caller exposed, turn
@@ -2718,6 +2940,26 @@ class GameViewModel {
         // own seat's response; we OR everyone's responses together so the host can
         // finalize once all eligible humans have answered.
         let incomingDiscardId = state.callResponseDiscardId.flatMap { UUID(uuidString: $0) }
+
+        // NEVER let a peer resurrect a call window we have already finalized.
+        //
+        // A seat that skipped keeps broadcasting its own `callResponses` /
+        // `callResponseDiscardId` until it hears otherwise. Once the host finalizes it
+        // nils both out — but that stale echo then arrives and the merge below happily
+        // re-set them, re-opening a window everybody had moved past. The host then
+        // re-broadcast the resurrected window, the peer echoed it straight back, and
+        // the two clients ping-ponged indefinitely (the five-figure `state updates rx`
+        // counts in the diagnostics). Worse, the re-opened window kept `canDrawTile`
+        // false, so the seat whose turn it now was could never draw.
+        if let incomingDiscardId, incomingDiscardId == lastFinalizedCallDiscardId {
+            callResponses = [:]
+            callResponseDiscardId = nil
+            callAvailable = false
+            availableCalls = []
+            eligibleCallSeats = []
+            return
+        }
+
         if let incomingDiscardId, incomingDiscardId == lastDiscardedTile?.id {
             var merged: [Int: String] = callResponseDiscardId == incomingDiscardId ? callResponses : [:]
             if let incoming = state.callResponses {
@@ -2861,38 +3103,43 @@ class GameViewModel {
                     return
                 }
             }
-            // SYMMETRIC EXCEPTION — local caller mid-exposure receives stale heartbeat.
-            // When this seat just called a discard, we removed the called tile from
-            // our local pile and appended a new exposed set. The host's play-phase
-            // heartbeat (every 3s) keeps broadcasting the pre-call state until it
-            // absorbs our exposure broadcast, so we receive an "ahead" packet whose
-            // discardPile is local+1 — but that extra tile is the one we just claimed.
-            // Without this guard, restoreState clobbers our exposure (tile snaps back
-            // to the rack, hasDrawnThisTurn rolled to false, currentPlayerIndex rolled
-            // back to the discarder). The host's follow-up heartbeats then keep us
-            // pinned in that rolled-back state and the table freezes — exactly the
-            // "game froze when invitee hit confirm on calling a pung" symptom.
+            // STALE PRE-EXPOSURE GUARD — protects ANY seat's call, not just our own.
+            //
+            // When a seat claims a discard we pull that tile OUT of the discard pile
+            // and push it into that seat's exposedSets. A peer whose heartbeat was
+            // already in flight still has the tile sitting loose in their pile, so
+            // their packet arrives looking "ahead" of us (one MORE discard) — and
+            // restoreState would happily undo the call: the tile snaps back into the
+            // pile, the exposure vanishes, and the turn pointer rolls back to the
+            // discarder.
+            //
+            // This used to be scoped to `localSeatIndex`, which covers a HUMAN calling
+            // on their own device. But the host also drives the BOTS — a bot's exposure
+            // lands on a BOT seat, so the old guard never fired for it. An invitee's
+            // in-flight pre-call heartbeat would sail through and erase the bot's
+            // claim; the host then re-detected the very same discard and the bot
+            // claimed it again, over and over: the "bot called, reversed, re-called,
+            // stuck" loop. Scope it to every seat we hold an unabsorbed exposure for.
+            //
+            // The tile-id test keeps this precise: we only drop the packet when the
+            // sender still has the exact tile we just claimed sitting in their discard
+            // pile, which can only mean their state predates our call.
             if weArePlaying && incomingStatus == .playing
-                && state.discardPile.count == discardPile.count + 1
-                && currentPlayerIndex == localSeatIndex
-                && hasDrawnThisTurn
-                && localSeatIndex >= 0
-                && localSeatIndex < players.count
-                && !players[localSeatIndex].exposedSets.isEmpty {
-                let serverHasMyExposure: Bool = {
-                    guard localSeatIndex < state.players.count else { return false }
-                    return state.players[localSeatIndex].exposedSets.count
-                        >= players[localSeatIndex].exposedSets.count
-                }()
-                if !serverHasMyExposure,
-                   let newSet = players[localSeatIndex].exposedSets.last {
-                    let localIds = Set(discardPile.map { $0.id })
-                    let extraInIncoming = state.discardPile.map { $0.id }
-                        .filter { !localIds.contains($0) }
-                    if newSet.contains(where: { extraInIncoming.contains($0.id) }) {
-                        print("⏪ ignoring stale pre-exposure broadcast (would erase my own call exposure, seat=\(localSeatIndex))")
-                        // Re-push our state so the sender catches up to our exposure
-                        // on this round-trip instead of waiting another heartbeat tick.
+                && state.discardPile.count > discardPile.count {
+                let localDiscardIds = Set(discardPile.map { $0.id })
+                let extraInIncoming = Set(
+                    state.discardPile.map { $0.id }.filter { !localDiscardIds.contains($0) }
+                )
+                if !extraInIncoming.isEmpty {
+                    for seat in 0..<min(players.count, state.players.count) {
+                        // Only seats where WE hold an exposure the sender hasn't absorbed yet.
+                        guard players[seat].exposedSets.count > state.players[seat].exposedSets.count,
+                              let newestSet = players[seat].exposedSets.last else { continue }
+                        // ...and the sender still has the claimed tile loose in their pile.
+                        guard newestSet.contains(where: { extraInIncoming.contains($0.id) }) else { continue }
+                        print("⏪ ignoring stale pre-exposure broadcast — would erase seat \(seat)'s call exposure (local discards=\(discardPile.count), incoming=\(state.discardPile.count))")
+                        // Re-push so the sender catches up on this round-trip instead of
+                        // waiting for their next heartbeat tick.
                         onlineSyncHandler?()
                         return
                     }
@@ -3109,10 +3356,57 @@ class GameViewModel {
             onlineSyncHandler?()
         }
 
-        // Drive playing-phase progression off of incoming state.
-        // Without this, when a non-host invitee discards, the host receives the new
-        // state but never evaluates calls / advances the turn, so the game stalls.
+        checkForStuckPlayPhase()
+    }
+
+    /// Play-phase self-healing: evaluates calls on a not-yet-processed remote
+    /// discard, finalizes an open call window if we've received a response,
+    /// force-finalizes a call window that's stuck open on the discarder, and
+    /// kicks off a bot's turn if one just became active.
+    ///
+    /// Previously this logic only ran reactively, inline inside
+    /// `applyRemoteState` — meaning it only had a chance to self-heal a stuck
+    /// game if the host happened to receive ANOTHER remote update after the
+    /// one that got it stuck. If nothing else changed (e.g. an invitee
+    /// discarded once and then just waited), the host's own heartbeat kept
+    /// re-broadcasting the same stuck state forever with nothing to trigger
+    /// this check. It's now also called proactively from the host's periodic
+    /// play-phase heartbeat, so the game can self-heal even with no further
+    /// remote activity at all.
+    func checkForStuckPlayPhase() {
         if isOnlineMode, gameStatus == .playing, !showEndGameOverlay {
+            // WALL-GAME BACKSTOP (host-authoritative).
+            //
+            // A wall game is normally declared by whichever draw path first meets an
+            // empty wall (`drawTile`, `executeBotTurn`, or the host force-drawing for
+            // a stalled remote human). But every one of those paths sits behind
+            // guards — an open call window, a blocked post-discard draw, a seat that
+            // simply never acts — and if any of them bails early, nobody declares:
+            // the table sits on an empty wall with no ending and no overlay, on every
+            // device. Checking here as well, on the host's heartbeat, makes the ending
+            // depend on the wall being empty rather than on some particular seat
+            // successfully taking its turn.
+            //
+            // TIMING IS THE WHOLE TRICK: an empty wall is NOT by itself a wall game.
+            // Whoever drew the last tile still gets to discard, and that final discard
+            // is still claimable — someone can legitimately win on it. So we only
+            // declare once the turn has actually reached a seat that MUST draw
+            // (`!hasDrawnThisTurn`) with no call window open in any form. Those are
+            // exactly the conditions the draw paths themselves check, so this doesn't
+            // end the game any earlier than a normal draw attempt would — it just
+            // guarantees the check happens.
+            if isOnlineHost,
+               wall.isEmpty,
+               !hasDrawnThisTurn,
+               !awaitingCall,
+               !callAvailable,
+               !showCallTileSelection,
+               callResponseDiscardId == nil {
+                print("🧱 wall-game backstop — wall empty and turn \(currentPlayerIndex) must draw; declaring")
+                declareWallGame()
+                return
+            }
+
             if let discarded = lastDiscardedTile,
                lastProcessedDiscardId != discarded.id,
                let discIdx = lastDiscardPlayerIndex,
@@ -3163,7 +3457,7 @@ class GameViewModel {
                 // Host drives a bot whose turn just became active via remote state.
                 let captured = currentPlayerIndex
                 Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(Double.random(in: 2.5...4.5)))
+                    try? await Task.sleep(for: .seconds(Double.random(in: 1.5...2.5)))
                     guard let self else { return }
                     if self.currentPlayerIndex == captured,
                        captured < self.players.count,
