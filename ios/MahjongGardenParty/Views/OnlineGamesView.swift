@@ -5,7 +5,10 @@ struct OnlineGamesView: View {
     @Environment(AppViewModel.self) private var appViewModel
     @Environment(GameViewModel.self) private var gameViewModel
     @State private var onlineVM = OnlineGameViewModel()
-    @State private var showCreateGame: Bool = false
+    /// Drives the spinner on the "+" button while the game is being created.
+    /// Replaces `showCreateGame` — there is no "Host a Garden Party" interstitial
+    /// any more; the create happens inline on the way to the lobby.
+    @State private var isCreatingGame: Bool = false
     @State private var selectedGameId: String?
     @State private var showLobby: Bool = false
     @State private var showOnlineGameBoard: Bool = false
@@ -26,17 +29,18 @@ struct OnlineGamesView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    showCreateGame = true
+                    createGameAndOpenLobby()
                 } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .foregroundStyle(themeManager.currentTheme.primary)
+                    if isCreatingGame {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "plus.circle.fill")
+                            .foregroundStyle(themeManager.currentTheme.primary)
+                    }
                 }
-            }
-        }
-        .sheet(isPresented: $showCreateGame) {
-            CreateGameSheet(onlineVM: onlineVM, appViewModel: appViewModel, gameViewModel: gameViewModel) {
-                showCreateGame = false
-                showLobby = true
+                // Real async work sits behind this now, so block a second tap
+                // from creating a duplicate game.
+                .disabled(isCreatingGame)
             }
         }
         .navigationDestination(isPresented: $showLobby) {
@@ -71,6 +75,31 @@ struct OnlineGamesView: View {
         }
         .refreshable {
             await onlineVM.loadActiveGames()
+        }
+    }
+
+    /// Create the game and go straight to the lobby.
+    ///
+    /// This used to route through CreateGameSheet ("Host a Garden Party") — a splash
+    /// screen with an icon, a feature list, and a "Create Game" button, i.e. a second
+    /// confirmation of a choice the player had already made by tapping "+".
+    private func createGameAndOpenLobby() {
+        Task {
+            isCreatingGame = true
+            let cardYear = gameViewModel.selectedCardYear.rawValue
+            let _ = await onlineVM.createGame(
+                displayName: appViewModel.playerProfile.displayName,
+                avatarImage: appViewModel.playerProfile.avatarImage,
+                cardYear: cardYear
+            )
+            isCreatingGame = false
+            // Only advance if the game actually exists. The lobby reads
+            // `currentGameId`, so pushing it after a failed create lands the player on
+            // an empty screen — which the old sheet did, since it called `onCreated()`
+            // unconditionally regardless of whether `createGame` returned nil.
+            if onlineVM.currentGameId != nil {
+                showLobby = true
+            }
         }
     }
 
@@ -193,9 +222,9 @@ struct OnlineGamesView: View {
                 .padding(.horizontal, 32)
 
             Button {
-                showCreateGame = true
+                createGameAndOpenLobby()
             } label: {
-                Label("Create Game", systemImage: "plus")
+                Label(isCreatingGame ? "Creating…" : "Create Game", systemImage: "plus")
                     .font(.subheadline.bold())
                     .padding(.horizontal, 24)
                     .padding(.vertical, 12)
@@ -203,6 +232,7 @@ struct OnlineGamesView: View {
                     .foregroundStyle(.white)
                     .clipShape(Capsule())
             }
+            .disabled(isCreatingGame)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)
@@ -322,97 +352,5 @@ struct ActiveGameRow: View {
             .clipShape(.rect(cornerRadius: 14))
         }
         .buttonStyle(.plain)
-    }
-}
-
-struct CreateGameSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(ThemeManager.self) private var themeManager
-    let onlineVM: OnlineGameViewModel
-    let appViewModel: AppViewModel
-    let gameViewModel: GameViewModel
-    let onCreated: () -> Void
-
-    @State private var isCreating: Bool = false
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 32) {
-                Image(systemName: "party.popper.fill")
-                    .font(.system(size: 56))
-                    .foregroundStyle(themeManager.currentTheme.primary)
-
-                VStack(spacing: 8) {
-                    Text("Host a Garden Party")
-                        .font(.title2.bold())
-                    Text("Create an online game and invite friends to play turn-based Mahjong.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Label("Invite up to 3 friends", systemImage: "person.3.fill")
-                    Label("Bots fill empty seats", systemImage: "cpu")
-                    Label("Take turns at your own pace", systemImage: "clock.fill")
-                    Label("Get notified when it's your turn", systemImage: "bell.fill")
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.tertiarySystemFill))
-                .clipShape(.rect(cornerRadius: 16))
-                .padding(.horizontal)
-
-                Spacer()
-
-                Button {
-                    isCreating = true
-                    Task {
-                        let cardYear = gameViewModel.selectedCardYear.rawValue
-                        let _ = await onlineVM.createGame(
-                            displayName: appViewModel.playerProfile.displayName,
-                            avatarImage: appViewModel.playerProfile.avatarImage,
-                            cardYear: cardYear
-                        )
-                        isCreating = false
-                        onCreated()
-                    }
-                } label: {
-                    HStack {
-                        if isCreating {
-                            ProgressView()
-                                .tint(.white)
-                        } else {
-                            Image(systemName: "plus.circle.fill")
-                        }
-                        Text("Create Game")
-                            .fontWeight(.bold)
-                    }
-                    .font(.title3)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(themeManager.currentTheme.primary)
-                    .foregroundStyle(.white)
-                    .clipShape(.rect(cornerRadius: 16))
-                }
-                .disabled(isCreating)
-                .padding(.horizontal)
-            }
-            .padding(.top, 32)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
     }
 }
