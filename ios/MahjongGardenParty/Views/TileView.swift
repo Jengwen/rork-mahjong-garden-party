@@ -110,6 +110,7 @@ struct TileView: View {
         case .iPadSmall: return 56
         case .iPadCompact: return 66
         case .iPadMedium: return 80
+        case .scaled(let w): return 58 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -241,6 +242,27 @@ enum TileSize {
     case small, medium, large, compact
     case iPadSmall, iPadCompact, iPadMedium
 
+    /// A freely-scaled tile whose width is decided at layout time from the space
+    /// actually available, rather than from a coarse iPhone/iPad switch.
+    ///
+    /// Every sub-metric (corner radius, icon/label fonts, glyph sizes) is derived
+    /// proportionally from `.medium` — the 44pt design reference — so a scaled
+    /// tile stays visually consistent with the fixed presets at any size. This is
+    /// what lets the Charleston screen fit a 4.7" iPhone SE, a 13" iPad, and
+    /// landscape in between without any of them clipping.
+    case scaled(width: CGFloat)
+
+    /// The design reference `.scaled` derives from (`.medium`'s width).
+    static let referenceWidth: CGFloat = 44
+    /// `.medium` is 44x60, so tiles keep a ~1.36 height:width ratio.
+    static let aspectRatio: CGFloat = 60.0 / 44.0
+
+    /// Clamped so a scaled tile can never collapse to an untappable sliver or
+    /// balloon past the largest iPad preset.
+    static func fitting(width: CGFloat) -> TileSize {
+        .scaled(width: min(max(width, 24), 64))
+    }
+
     var width: CGFloat {
         switch self {
         case .small: return 32
@@ -250,6 +272,7 @@ enum TileSize {
         case .iPadSmall: return 44
         case .iPadCompact: return 52
         case .iPadMedium: return 62
+        case .scaled(let w): return w.rounded()
         }
     }
 
@@ -262,6 +285,7 @@ enum TileSize {
         case .iPadSmall: return 58
         case .iPadCompact: return 68
         case .iPadMedium: return 82
+        case .scaled(let w): return (w * TileSize.aspectRatio).rounded()
         }
     }
 
@@ -274,6 +298,7 @@ enum TileSize {
         case .iPadSmall: return 7
         case .iPadCompact: return 8
         case .iPadMedium: return 9
+        case .scaled(let w): return 7 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -286,6 +311,7 @@ enum TileSize {
         case .iPadSmall: return .system(size: 18)
         case .iPadCompact: return .system(size: 20)
         case .iPadMedium: return .system(size: 24)
+        case .scaled(let w): return .system(size: 18 * (w / TileSize.referenceWidth))
         }
     }
 
@@ -298,6 +324,7 @@ enum TileSize {
         case .iPadSmall: return .system(size: 11, weight: .bold)
         case .iPadCompact: return .system(size: 12, weight: .bold)
         case .iPadMedium: return .system(size: 14, weight: .bold)
+        case .scaled(let w): return .system(size: 11 * (w / TileSize.referenceWidth), weight: .bold)
         }
     }
 
@@ -310,6 +337,7 @@ enum TileSize {
         case .iPadSmall: return 24
         case .iPadCompact: return 30
         case .iPadMedium: return 36
+        case .scaled(let w): return 26 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -322,6 +350,7 @@ enum TileSize {
         case .iPadSmall: return 34
         case .iPadCompact: return 40
         case .iPadMedium: return 50
+        case .scaled(let w): return 36 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -334,6 +363,7 @@ enum TileSize {
         case .iPadSmall: return 50
         case .iPadCompact: return 60
         case .iPadMedium: return 72
+        case .scaled(let w): return 52 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -346,6 +376,7 @@ enum TileSize {
         case .iPadSmall: return 50
         case .iPadCompact: return 60
         case .iPadMedium: return 72
+        case .scaled(let w): return 52 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -358,6 +389,7 @@ enum TileSize {
         case .iPadSmall: return .system(size: 13, weight: .bold)
         case .iPadCompact: return .system(size: 15, weight: .bold)
         case .iPadMedium: return .system(size: 17, weight: .bold)
+        case .scaled(let w): return .system(size: 13 * (w / TileSize.referenceWidth), weight: .bold)
         }
     }
 
@@ -370,6 +402,7 @@ enum TileSize {
         case .iPadSmall: return .system(size: 20, weight: .heavy)
         case .iPadCompact: return .system(size: 24, weight: .heavy)
         case .iPadMedium: return .system(size: 28, weight: .heavy)
+        case .scaled(let w): return .system(size: 20 * (w / TileSize.referenceWidth), weight: .heavy)
         }
     }
 
@@ -382,6 +415,7 @@ enum TileSize {
         case .iPadSmall: return .system(size: 14, weight: .bold)
         case .iPadCompact: return .system(size: 16, weight: .bold)
         case .iPadMedium: return .system(size: 20, weight: .bold)
+        case .scaled(let w): return .system(size: 14 * (w / TileSize.referenceWidth), weight: .bold)
         }
     }
 
@@ -394,6 +428,7 @@ enum TileSize {
         case .iPadSmall: return 34
         case .iPadCompact: return 40
         case .iPadMedium: return 50
+        case .scaled(let w): return 36 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -406,6 +441,7 @@ enum TileSize {
         case .iPadSmall: return 4
         case .iPadCompact: return 4
         case .iPadMedium: return 5
+        case .scaled(let w): return 4 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -418,6 +454,7 @@ enum TileSize {
         case .iPadSmall: return .system(size: 26, weight: .bold)
         case .iPadCompact: return .system(size: 30, weight: .bold)
         case .iPadMedium: return .system(size: 36, weight: .bold)
+        case .scaled(let w): return .system(size: 28 * (w / TileSize.referenceWidth), weight: .bold)
         }
     }
 
@@ -430,6 +467,7 @@ enum TileSize {
         case .iPadSmall: return .system(size: 11, weight: .heavy)
         case .iPadCompact: return .system(size: 12, weight: .heavy)
         case .iPadMedium: return .system(size: 14, weight: .heavy)
+        case .scaled(let w): return .system(size: 11 * (w / TileSize.referenceWidth), weight: .heavy)
         }
     }
 
@@ -442,6 +480,7 @@ enum TileSize {
         case .iPadSmall: return 3
         case .iPadCompact: return 4
         case .iPadMedium: return 4
+        case .scaled(let w): return 3 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -454,6 +493,7 @@ enum TileSize {
         case .iPadSmall: return 40
         case .iPadCompact: return 48
         case .iPadMedium: return 58
+        case .scaled(let w): return 40 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -466,6 +506,7 @@ enum TileSize {
         case .iPadSmall: return 50
         case .iPadCompact: return 58
         case .iPadMedium: return 72
+        case .scaled(let w): return 52 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -478,6 +519,7 @@ enum TileSize {
         case .iPadSmall: return 4
         case .iPadCompact: return 4
         case .iPadMedium: return 5
+        case .scaled(let w): return 4 * (w / TileSize.referenceWidth)
         }
     }
 
@@ -490,6 +532,7 @@ enum TileSize {
         case .iPadSmall: return .system(size: 18, weight: .heavy)
         case .iPadCompact: return .system(size: 22, weight: .heavy)
         case .iPadMedium: return .system(size: 26, weight: .heavy)
+        case .scaled(let w): return .system(size: 18 * (w / TileSize.referenceWidth), weight: .heavy)
         }
     }
 
@@ -502,6 +545,7 @@ enum TileSize {
         case .iPadSmall: return 2
         case .iPadCompact: return 3
         case .iPadMedium: return 3
+        case .scaled(let w): return 2 * (w / TileSize.referenceWidth)
         }
     }
 

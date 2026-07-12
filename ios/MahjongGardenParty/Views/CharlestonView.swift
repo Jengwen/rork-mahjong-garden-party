@@ -14,40 +14,100 @@ struct CharlestonView: View {
     @State private var showDiagnostics: Bool = false
     @State private var showExitConfirm: Bool = false
 
+    /// Measured at layout time so sizing follows the space we actually have,
+    /// rather than a coarse "is it an iPad" guess. Seeded with a standard iPhone
+    /// portrait size so the very first frame is sensible before measurement lands.
+    @State private var availableSize: CGSize = CGSize(width: 390, height: 700)
+
     private var isIPad: Bool { horizontalSizeClass == .regular }
-    private var mediumTile: TileSize { isIPad ? .iPadMedium : .medium }
+    private var L: CharlestonLayout { CharlestonLayout(available: availableSize, isPad: isIPad) }
+    private var mediumTile: TileSize { L.tile }
     private var btnFont: Font { isIPad ? .callout.bold() : .caption.bold() }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Spacer()
-            if gameViewModel.hasSubmittedCharlestonPass {
-                // Once this player has submitted (including a courtesy pick), keep them on
-                // the "tiles passed" waiting screen no matter what stale broadcasts arrive.
-                waitingForOthersSection
-            } else if gameViewModel.showCourtesyOptions && (!gameViewModel.isOnlineMode || gameViewModel.localSeatIndex == 0) {
-                courtesyOptionsSection
-            } else if gameViewModel.showCourtesyOptions && gameViewModel.isOnlineMode {
-                waitingForEastCourtesySection
-            } else if gameViewModel.charlestonPhase.isCourtesy && gameViewModel.courtesyTileCount > 0 && gameViewModel.isOnlineMode && !gameViewModel.isMyCourtesyTurn {
-                waitingForCourtesyTurnSection
-            } else {
-                directionIndicator
-            }
+    /// Layout metrics derived from the real available space.
+    ///
+    /// The Charleston screen stacks a header, a phase/direction indicator, a
+    /// suggested-hands button, a selected-tiles row, the full hand row and a
+    /// confirm button — enough vertical content that the previous fixed sizing
+    /// (one set of numbers for every iPhone, another for every iPad) overflowed
+    /// short screens and clipped the confirm button off the bottom. Anything
+    /// shorter than a standard iPhone portrait — an SE, or *any* iPhone in
+    /// landscape — hit that. Everything now scales off the measured height.
+    struct CharlestonLayout {
+        let tile: TileSize
+        let scale: CGFloat
+        let hPadding: CGFloat
+        let vPadding: CGFloat
+        let sectionSpacing: CGFloat
+        let tileSpacing: CGFloat
+        let isPad: Bool
 
-            suggestedHandsButton
-            Spacer()
-            if !gameViewModel.showCourtesyOptions && !gameViewModel.hasSubmittedCharlestonPass && gameViewModel.isMyCourtesyTurn && !(gameViewModel.charlestonPhase.isCourtesy && gameViewModel.courtesyTileCount > 0 && gameViewModel.isOnlineMode && gameViewModel.courtesyCurrentSeat != gameViewModel.localSeatIndex) {
-                if gameViewModel.requiredTileCount > 0 {
-                    selectedTilesPreview
-                }
-                playerHandSection
-                confirmButton
-            }
+        init(available: CGSize, isPad: Bool) {
+            self.isPad = isPad
+
+            // Height the screen was originally laid out against (standard iPhone
+            // portrait content area). Everything scales off the ratio to it.
+            let designHeight: CGFloat = 700
+            let raw = available.height / max(designHeight, 1)
+
+            // Clamped both ways: the floor keeps tiles tappable (~27pt wide) on a
+            // landscape iPhone, the ceiling stops an iPad blowing tiles up past the
+            // old .iPadMedium preset they used to be pinned to.
+            let s = min(isPad ? 1.4 : 1.0, max(0.62, raw))
+            self.scale = s
+
+            // Two rows of tiles are the single biggest vertical consumer, so they
+            // take the scale directly.
+            self.tile = TileSize.fitting(width: TileSize.referenceWidth * s)
+            self.tileSpacing = (isPad ? 5 : 3) * s
+            self.hPadding = (isPad ? 48 : 32) * min(s, 1.0)
+            self.vPadding = (isPad ? 28 : 22) * s
+            self.sectionSpacing = (isPad ? 16 : 12) * s
         }
-        .padding(.horizontal, isIPad ? 48 : 32)
-        .padding(.vertical, isIPad ? 28 : 22)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ScrollView {
+                VStack(spacing: 0) {
+                    header
+                    Spacer(minLength: L.sectionSpacing)
+                    if gameViewModel.hasSubmittedCharlestonPass {
+                        // Once this player has submitted (including a courtesy pick), keep them on
+                        // the "tiles passed" waiting screen no matter what stale broadcasts arrive.
+                        waitingForOthersSection
+                    } else if gameViewModel.showCourtesyOptions && (!gameViewModel.isOnlineMode || gameViewModel.localSeatIndex == 0) {
+                        courtesyOptionsSection
+                    } else if gameViewModel.showCourtesyOptions && gameViewModel.isOnlineMode {
+                        waitingForEastCourtesySection
+                    } else if gameViewModel.charlestonPhase.isCourtesy && gameViewModel.courtesyTileCount > 0 && gameViewModel.isOnlineMode && !gameViewModel.isMyCourtesyTurn {
+                        waitingForCourtesyTurnSection
+                    } else {
+                        directionIndicator
+                    }
+
+                    suggestedHandsButton
+                    Spacer(minLength: L.sectionSpacing)
+                    if !gameViewModel.showCourtesyOptions && !gameViewModel.hasSubmittedCharlestonPass && gameViewModel.isMyCourtesyTurn && !(gameViewModel.charlestonPhase.isCourtesy && gameViewModel.courtesyTileCount > 0 && gameViewModel.isOnlineMode && gameViewModel.courtesyCurrentSeat != gameViewModel.localSeatIndex) {
+                        if gameViewModel.requiredTileCount > 0 {
+                            selectedTilesPreview
+                        }
+                        playerHandSection
+                        confirmButton
+                    }
+                }
+                .padding(.horizontal, L.hPadding)
+                .padding(.vertical, L.vPadding)
+                // minHeight makes the stack fill the screen (so the Spacers still
+                // centre things) when there IS room, while the enclosing ScrollView
+                // catches the cases scaling alone can't save — landscape plus large
+                // Dynamic Type — so content is never silently clipped.
+                .frame(maxWidth: .infinity, minHeight: geo.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .onAppear { availableSize = geo.size }
+            .onChange(of: geo.size) { _, newSize in availableSize = newSize }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(tableBackground)
         .overlay(alignment: .topLeading) {
@@ -151,7 +211,7 @@ struct CharlestonView: View {
     }
 
     private var suggestedHandsButton: some View {
-        HStack(spacing: isIPad ? 12 : 8) {
+        HStack(spacing: (isIPad ? 12 : 8) * L.scale) {
             Button {
                 onShowTileGuide()
             } label: {
@@ -161,7 +221,7 @@ struct CharlestonView: View {
                 }
                 .font(btnFont)
                 .padding(.horizontal, isIPad ? 20 : 14)
-                .padding(.vertical, isIPad ? 12 : 8)
+                .padding(.vertical, (isIPad ? 12 : 8) * L.scale)
                 .background(themeManager.currentTheme.secondary.opacity(0.15))
                 .foregroundStyle(themeManager.currentTheme.secondary)
                 .clipShape(.rect(cornerRadius: isIPad ? 12 : 10))
@@ -176,13 +236,15 @@ struct CharlestonView: View {
                 }
                 .font(btnFont)
                 .padding(.horizontal, isIPad ? 20 : 14)
-                .padding(.vertical, isIPad ? 12 : 8)
+                .padding(.vertical, (isIPad ? 12 : 8) * L.scale)
                 .background(themeManager.currentTheme.accent.opacity(0.15))
                 .foregroundStyle(themeManager.currentTheme.accent)
                 .clipShape(.rect(cornerRadius: isIPad ? 12 : 10))
             }
 
-            if gameViewModel.showStopCharlestonOption {
+            // Gated on `canStopCharleston`, not the raw flag: the button must vanish
+            // on EVERY device the moment any seat commits a 2nd-Charleston pass.
+            if gameViewModel.canStopCharleston {
                 Button {
                     gameViewModel.stopCharlestonEarly()
                 } label: {
@@ -192,7 +254,7 @@ struct CharlestonView: View {
                     }
                     .font(btnFont)
                     .padding(.horizontal, isIPad ? 20 : 14)
-                    .padding(.vertical, isIPad ? 12 : 8)
+                    .padding(.vertical, (isIPad ? 12 : 8) * L.scale)
                     .background(Color.red.opacity(0.15))
                     .foregroundStyle(.red)
                     .clipShape(.rect(cornerRadius: isIPad ? 12 : 10))
@@ -200,19 +262,19 @@ struct CharlestonView: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
-        .animation(.spring(response: 0.3), value: gameViewModel.showStopCharlestonOption)
+        .animation(.spring(response: 0.3), value: gameViewModel.canStopCharleston)
         .padding(.bottom, 4)
     }
 
     private var header: some View {
-        HStack(spacing: isIPad ? 16 : 12) {
+        HStack(spacing: (isIPad ? 16 : 12) * L.scale) {
             Button {
                 showExitConfirm = true
             } label: {
                 Image(systemName: "xmark")
                     .font(isIPad ? .body.bold() : .subheadline.bold())
                     .foregroundStyle(.primary)
-                    .frame(width: isIPad ? 44 : 36, height: isIPad ? 44 : 36)
+                    .frame(width: (isIPad ? 44 : 36) * L.scale, height: (isIPad ? 44 : 36) * L.scale)
                     .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
@@ -230,8 +292,8 @@ struct CharlestonView: View {
 
             phaseIndicator
         }
-        .padding(.horizontal, isIPad ? 28 : 20)
-        .padding(.top, 12)
+        .padding(.horizontal, (isIPad ? 28 : 20) * L.scale)
+        .padding(.top, 12 * L.scale)
         .confirmationDialog("Exit Charleston?", isPresented: $showExitConfirm, titleVisibility: .visible) {
             Button(gameViewModel.isOnlineMode ? "Leave Game" : "Exit to Lobby", role: .destructive) {
                 Task {
@@ -283,9 +345,9 @@ struct CharlestonView: View {
     }
 
     private var directionIndicator: some View {
-        VStack(spacing: isIPad ? 16 : 12) {
+        VStack(spacing: L.sectionSpacing) {
             Image(systemName: gameViewModel.charlestonPhase.direction.systemImage)
-                .font(.system(size: isIPad ? 48 : 36, weight: .medium))
+                .font(.system(size: (isIPad ? 48 : 36) * L.scale, weight: .medium))
                 .foregroundStyle(themeManager.currentTheme.primary)
                 .symbolEffect(.pulse, options: .repeating)
 
@@ -297,17 +359,17 @@ struct CharlestonView: View {
                 .font(isIPad ? .body : .subheadline)
                 .foregroundStyle(.secondary)
         }
-        .padding(isIPad ? 24 : 16)
+        .padding((isIPad ? 24 : 16) * L.scale)
         .background(.ultraThinMaterial)
         .clipShape(.rect(cornerRadius: isIPad ? 20 : 16))
-        .padding(.horizontal, isIPad ? 60 : 40)
+        .padding(.horizontal, (isIPad ? 60 : 40) * L.scale)
     }
 
 
     private var courtesyOptionsSection: some View {
-        VStack(spacing: isIPad ? 24 : 20) {
+        VStack(spacing: (isIPad ? 24 : 20) * L.scale) {
             Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: isIPad ? 48 : 36, weight: .medium))
+                .font(.system(size: (isIPad ? 48 : 36) * L.scale, weight: .medium))
                 .foregroundStyle(themeManager.currentTheme.primary)
 
             Text("Courtesy Pass")
@@ -319,18 +381,18 @@ struct CharlestonView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
-            HStack(spacing: isIPad ? 16 : 12) {
+            HStack(spacing: (isIPad ? 16 : 12) * L.scale) {
                 ForEach(0...3, id: \.self) { count in
                     Button {
                         gameViewModel.selectCourtesyCount(count)
                     } label: {
-                        VStack(spacing: isIPad ? 6 : 4) {
+                        VStack(spacing: (isIPad ? 6 : 4) * L.scale) {
                             Text("\(count)")
                                 .font(isIPad ? .system(.title, weight: .bold) : .system(.title2, weight: .bold))
                             Text(count == 0 ? "Skip" : (count == 1 ? "tile" : "tiles"))
                                 .font(isIPad ? .caption : .caption2)
                         }
-                        .frame(width: isIPad ? 80 : 64, height: isIPad ? 80 : 64)
+                        .frame(width: (isIPad ? 80 : 64) * L.scale, height: (isIPad ? 80 : 64) * L.scale)
                         .background(
                             count == 0
                             ? Color(.tertiarySystemFill)
@@ -347,14 +409,14 @@ struct CharlestonView: View {
                 }
             }
         }
-        .padding(isIPad ? 32 : 24)
+        .padding((isIPad ? 32 : 24) * L.scale)
         .background(.ultraThinMaterial)
         .clipShape(.rect(cornerRadius: isIPad ? 24 : 20))
-        .padding(.horizontal, isIPad ? 48 : 32)
+        .padding(.horizontal, (isIPad ? 48 : 32) * L.scale)
     }
 
     private var selectedTilesPreview: some View {
-        HStack(spacing: isIPad ? 12 : 8) {
+        HStack(spacing: (isIPad ? 12 : 8) * L.scale) {
             ForEach(0..<gameViewModel.requiredTileCount, id: \.self) { idx in
                 let selectedIndices = Array(gameViewModel.charlestonSelectedIndices.sorted())
                 if idx < selectedIndices.count,
@@ -372,13 +434,13 @@ struct CharlestonView: View {
                 }
             }
         }
-        .padding(.bottom, isIPad ? 16 : 12)
+        .padding(.bottom, (isIPad ? 16 : 12) * L.scale)
         .animation(.spring(response: 0.3), value: gameViewModel.charlestonSelectedIndices)
     }
 
     private var playerHandSection: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: isIPad ? 5 : 3) {
+            HStack(spacing: L.tileSpacing) {
                 if let player = gameViewModel.humanPlayer {
                     ForEach(Array(player.hand.enumerated()), id: \.element.id) { index, tile in
                         TileView(
@@ -404,7 +466,7 @@ struct CharlestonView: View {
                 }
             }
         }
-        .contentMargins(.horizontal, isIPad ? 20 : 12)
+        .contentMargins(.horizontal, (isIPad ? 20 : 12) * L.scale)
         .scrollIndicators(.hidden)
         .sensoryFeedback(.selection, trigger: gameViewModel.charlestonSelectedIndices.count)
     }
@@ -420,7 +482,7 @@ struct CharlestonView: View {
             }
             .font(isIPad ? .title3 : .headline)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, isIPad ? 18 : 14)
+            .padding(.vertical, (isIPad ? 18 : 14) * L.scale)
             .background(gameViewModel.canConfirmCharleston
                         ? themeManager.currentTheme.primary
                         : Color(.tertiarySystemFill))
@@ -428,13 +490,13 @@ struct CharlestonView: View {
             .clipShape(.rect(cornerRadius: isIPad ? 16 : 14))
         }
         .disabled(!gameViewModel.canConfirmCharleston)
-        .padding(.horizontal, isIPad ? 32 : 20)
-        .padding(.bottom, isIPad ? 16 : 12)
+        .padding(.horizontal, (isIPad ? 32 : 20) * L.scale)
+        .padding(.bottom, (isIPad ? 16 : 12) * L.scale)
         .sensoryFeedback(.impact(weight: .medium), trigger: gameViewModel.charlestonPhase)
     }
 
     private var waitingForOthersSection: some View {
-        VStack(spacing: isIPad ? 16 : 12) {
+        VStack(spacing: L.sectionSpacing) {
             ProgressView()
                 .scaleEffect(isIPad ? 1.4 : 1.1)
                 .tint(themeManager.currentTheme.primary)
@@ -451,10 +513,10 @@ struct CharlestonView: View {
                     .padding(.top, isIPad ? 8 : 4)
             }
         }
-        .padding(isIPad ? 32 : 24)
+        .padding((isIPad ? 32 : 24) * L.scale)
         .background(.ultraThinMaterial)
         .clipShape(.rect(cornerRadius: isIPad ? 24 : 20))
-        .padding(.horizontal, isIPad ? 48 : 32)
+        .padding(.horizontal, (isIPad ? 48 : 32) * L.scale)
     }
 
     private var playerSubmissionStatus: some View {
@@ -490,7 +552,7 @@ struct CharlestonView: View {
     }
 
     private var waitingForEastCourtesySection: some View {
-        VStack(spacing: isIPad ? 16 : 12) {
+        VStack(spacing: L.sectionSpacing) {
             ProgressView()
                 .scaleEffect(isIPad ? 1.4 : 1.1)
                 .tint(themeManager.currentTheme.primary)
@@ -502,10 +564,10 @@ struct CharlestonView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
-        .padding(isIPad ? 32 : 24)
+        .padding((isIPad ? 32 : 24) * L.scale)
         .background(.ultraThinMaterial)
         .clipShape(.rect(cornerRadius: isIPad ? 24 : 20))
-        .padding(.horizontal, isIPad ? 48 : 32)
+        .padding(.horizontal, (isIPad ? 48 : 32) * L.scale)
     }
 
     private var waitingForCourtesyTurnSection: some View {
@@ -513,9 +575,9 @@ struct CharlestonView: View {
         let name: String = currentSeat < gameViewModel.players.count
             ? gameViewModel.players[currentSeat].profile.displayName
             : "next player"
-        return VStack(spacing: isIPad ? 16 : 12) {
+        return VStack(spacing: L.sectionSpacing) {
             Image(systemName: "hourglass")
-                .font(.system(size: isIPad ? 44 : 32, weight: .medium))
+                .font(.system(size: (isIPad ? 44 : 32) * L.scale, weight: .medium))
                 .foregroundStyle(themeManager.currentTheme.primary)
                 .symbolEffect(.pulse, options: .repeating)
             Text("Courtesy Pass")
@@ -528,10 +590,10 @@ struct CharlestonView: View {
             playerSubmissionStatus
                 .padding(.top, isIPad ? 8 : 4)
         }
-        .padding(isIPad ? 32 : 24)
+        .padding((isIPad ? 32 : 24) * L.scale)
         .background(.ultraThinMaterial)
         .clipShape(.rect(cornerRadius: isIPad ? 24 : 20))
-        .padding(.horizontal, isIPad ? 48 : 32)
+        .padding(.horizontal, (isIPad ? 48 : 32) * L.scale)
     }
 
     private var tableBackground: some View {
