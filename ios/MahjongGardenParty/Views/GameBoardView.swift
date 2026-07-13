@@ -595,6 +595,39 @@ struct GameBoardView: View {
             }
             .disabled(!gameViewModel.canUseManualCallButton)
             .sensoryFeedback(.impact(weight: .light), trigger: gameViewModel.manualCallExpanded)
+
+            // SKIP, shown only for a joker-only call.
+            //
+            // That case (2+ jokers, no natural match) deliberately SUPPRESSES the
+            // auto-popup, so this row is the player's only affordance — and until now it
+            // offered "Call" and nothing else. The only way to DECLINE was to open the
+            // call popup you didn't want and press Skip *inside* it. A player who didn't
+            // know that had no visible way to say no, and no way to even tell the game
+            // was waiting on them: the table just sat there.
+            //
+            // Skip is destructive-ish (it gives up a legal call), so it reads as the
+            // quiet, secondary action next to Call rather than competing with it.
+            if gameViewModel.canUseManualCallButton {
+                Button {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        gameViewModel.dismissCallOptions()
+                    }
+                } label: {
+                    HStack(spacing: isIPad ? 6 : 4) {
+                        Image(systemName: "xmark")
+                            .font(btnIconFont)
+                        Text("Skip")
+                            .font(btnFont)
+                    }
+                    .padding(.horizontal, isIPad ? 16 : 10)
+                    .padding(.vertical, btnVPad)
+                    .background(Color(.tertiarySystemFill))
+                    .foregroundStyle(.secondary)
+                    .clipShape(.rect(cornerRadius: isIPad ? 12 : 10))
+                }
+                .sensoryFeedback(.impact(weight: .light), trigger: gameViewModel.callAvailable)
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
         }
     }
 
