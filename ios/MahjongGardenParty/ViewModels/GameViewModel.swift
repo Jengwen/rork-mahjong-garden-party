@@ -52,6 +52,31 @@ class GameViewModel {
         }
     }
 
+    /// Whether the host may drive this seat automatically.
+    ///
+    /// `players[i].isBot` is a SERIALIZED field, so a single bad broadcast from ANY
+    /// client can flip a human seat to `isBot = true` — and the moment the host believes
+    /// a human is a bot, it starts playing that person's turns for them. That is the
+    /// "the game started playing everyone's turns automatically" failure, and it is
+    /// self-sustaining: the host re-broadcasts the bad flag straight back out to
+    /// everyone, so the corruption spreads and sticks.
+    ///
+    /// `selfRectifyBotFlags` tries to repair the flag, but it BAILS OUTRIGHT when the
+    /// authoritative sets are empty and only touches seats it recognises — so it cannot
+    /// be the last line of defence. Consult the participant list DIRECTLY instead: a
+    /// seat occupied by a real participant is a human, full stop, no matter what the
+    /// mutable serialized flag currently claims.
+    func seatIsDrivableBot(_ seat: Int) -> Bool {
+        guard seat >= 0, seat < players.count else { return false }
+        if isOnlineMode, authoritativeRealSeats.contains(seat) {
+            if players[seat].isBot {
+                print("🚫 seat \(seat) has a real participant but isBot=true — refusing to auto-drive it")
+            }
+            return false
+        }
+        return players[seat].isBot
+    }
+
     private func notifyOnlineSync() {
         guard isOnlineMode, !isApplyingRemoteState else { return }
         onlineSyncHandler?()
@@ -249,16 +274,29 @@ class GameViewModel {
         // A window we have already finalized is closed, whatever else says otherwise.
         if lastFinalizedCallDiscardId == discarded.id { return false }
 
+        // TURN-POINTER INFERENCE — closes the window without waiting for a round trip.
+        //
+        // The host only calls `proceedWithTurn` AFTER finalizing the call window, so a
+        // turn pointer that has moved off the discarder is proof the window is shut.
+        // `callResponseDiscardId` is authoritative but SERIALIZED, so an invitee only
+        // learns it was cleared when the host's next broadcast lands — which left their
+        // Draw button greyed out for a full network round trip after the turn was
+        // already theirs. The turn pointer is in the very same packet and says the same
+        // thing sooner.
+        //
+        // This does NOT weaken the no-drawing-while-others-decide rule: for as long as
+        // anyone may still claim the discard, the host keeps the turn ON the discarder,
+        // so this branch cannot fire.
+        if let discardSeat = lastDiscardPlayerIndex, currentPlayerIndex != discardSeat {
+            return false
+        }
+
         // AUTHORITATIVE AND TABLE-WIDE. The host owns the call window and nils out
         // `callResponseDiscardId` — which IS serialized — the instant it finalizes.
         // So while that field still points at the current discard, SOMEONE may yet
         // claim it: another human who hasn't answered, or a bot the host is still
         // deciding for. No seat may draw until it closes, INCLUDING a seat that has
         // already skipped.
-        //
-        // This condition used to be AND-ed with the local-only signals below, which
-        // meant a client with nothing pending of its own concluded the window was shut
-        // and lit up Draw while the rest of the table was still deciding.
         if callResponseDiscardId == discarded.id { return true }
 
         // Local-only signals, for a window this client is still resolving itself.
@@ -1878,7 +1916,7 @@ class GameViewModel {
         let waitingSeats = eligibleCallSeats.filter { seat in
             guard seat < players.count else { return false }
             if seat == lastDiscardPlayerIndex { return false }
-            if players[seat].isBot { return false }
+            if seatIsDrivableBot(seat) { return false }
             let resp = callResponses[seat]
             return resp == nil || resp == "hold"
         }
@@ -2013,7 +2051,7 @@ class GameViewModel {
         // the game froze on the next bot.
         hasDrawnThisTurn = false
         invalidMahjongMessage = nil
-        if players[currentPlayerIndex].isBot {
+        if seatIsDrivableBot(currentPlayerIndex) {
             gameMessage = "\(players[currentPlayerIndex].profile.displayName) is thinking..."
             // Only the host drives bot turns in online mode; other clients receive
             // the bot's move via state sync.
@@ -2236,7 +2274,7 @@ class GameViewModel {
         // state says belongs to a real player.
         selfRectifyBotFlags()
         guard currentPlayerIndex < players.count,
-              players[currentPlayerIndex].isBot else { return }
+              seatIsDrivableBot(currentPlayerIndex) else { return }
 
         // CRITICAL: a bot must NEVER draw while a call window is open or while
         // another player is still selecting tiles for a pung/kong/quint. Without
@@ -2404,7 +2442,7 @@ class GameViewModel {
     func hostForceAdvanceRemoteTurn() {
         guard canHostForceAdvanceRemoteTurn else { return }
         let seat = currentPlayerIndex
-        if players[seat].isBot {
+        if seatIsDrivableBot(seat) {
             hostForceAdvanceBotSeat(seat: seat)
         } else {
             hostForceAdvanceRemoteSeat(seat: seat)
@@ -2418,7 +2456,7 @@ class GameViewModel {
         guard isOnlineHost, isOnlineMode else { return }
         guard gameStatus == .playing else { return }
         guard seat < players.count, currentPlayerIndex == seat else { return }
-        guard players[seat].isBot else { return }
+        guard seatIsDrivableBot(seat) else { return }
         // Clear any stale call/draw flags that may be blocking executeBotTurn's guards.
         callAvailable = false
         availableCalls = []
@@ -2471,7 +2509,7 @@ class GameViewModel {
         }
         selfRectifyBotFlags()
         let seat = currentPlayerIndex
-        if seat == localSeatIndex || players[seat].isBot {
+        if seat == localSeatIndex || seatIsDrivableBot(seat) {
             remoteTurnWatchdog?.cancel()
             remoteTurnWatchdog = nil
             return
@@ -2504,7 +2542,7 @@ class GameViewModel {
                       self.hasDrawnThisTurn == drewSnapshot,
                       self.discardPile.count == discardCountSnapshot,
                       seat < self.players.count,
-                      !self.players[seat].isBot,
+                      !self.seatIsDrivableBot(seat),
                       self.players[seat].hand.count == handCountSnapshot else { return }
                 nudgeCount += 1
                 print("⏰ remote turn watchdog: nudge #\(nudgeCount) seat=\(seat) drew=\(drewSnapshot)")
@@ -2521,7 +2559,7 @@ class GameViewModel {
         guard gameStatus == .playing else { return }
         guard !awaitingCall, !callAvailable, callResponseDiscardId == nil else { return }
         guard seat < players.count, currentPlayerIndex == seat else { return }
-        guard !players[seat].isBot, seat != localSeatIndex else { return }
+        guard !seatIsDrivableBot(seat), seat != localSeatIndex else { return }
 
         if !hasDrawnThisTurn {
             guard !wall.isEmpty else { declareWallGame(); return }
@@ -3449,7 +3487,7 @@ class GameViewModel {
                 tryFinalizeCallWindow(forceTimeout: true)
             } else if isOnlineHost,
                       currentPlayerIndex < players.count,
-                      { selfRectifyBotFlags(); return players[currentPlayerIndex].isBot }(),
+                      { selfRectifyBotFlags(); return seatIsDrivableBot(currentPlayerIndex) }(),
                       !hasDrawnThisTurn,
                       !awaitingCall,
                       !callAvailable,
@@ -3461,7 +3499,7 @@ class GameViewModel {
                     guard let self else { return }
                     if self.currentPlayerIndex == captured,
                        captured < self.players.count,
-                       self.players[captured].isBot,
+                       self.seatIsDrivableBot(captured),
                        !self.hasDrawnThisTurn,
                        !self.awaitingCall,
                        !self.callAvailable,
