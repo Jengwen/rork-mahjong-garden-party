@@ -105,6 +105,34 @@ class OnlineGameService {
         return result
     }
 
+    /// Mark a game completed WITHOUT touching `game_data`.
+    ///
+    /// Used when the host leaves a game that is still live. The row must stop saying
+    /// "playing", or every remaining player is stranded on a table that can never
+    /// advance — the host drives all bot turns and owns call-window finalization — with
+    /// nothing in the database to tell them the game is dead. A status-only patch is
+    /// deliberate: we do NOT want to overwrite `game_data` on the way out, and it keeps
+    /// the write small enough to land before the client tears itself down.
+    func markGameCompleted(gameId: String) async throws {
+        nonisolated struct StatusUpdate: Codable, Sendable {
+            let status: String
+            let updatedAt: String
+            enum CodingKeys: String, CodingKey {
+                case status
+                case updatedAt = "updated_at"
+            }
+        }
+        let update = StatusUpdate(
+            status: OnlineGameStatus.completed.rawValue,
+            updatedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try await client
+            .from("online_games")
+            .update(update)
+            .eq("id", value: gameId)
+            .execute()
+    }
+
     func updateGameState(gameId: String, gameData: SerializedGameState, currentTurnUserId: String?, status: String) async throws {
         nonisolated struct GameUpdate: Codable, Sendable {
             let gameData: SerializedGameState
