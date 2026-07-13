@@ -1,7 +1,7 @@
 // Supabase Edge Function: send-game-invite-push
 //
 // Sends an APNs push notification to the invitee when a game invite is created.
-// Invoked from the iOS app via `supabase.functions.invoke("send-game-invite-push", { body: { receiverId, gameId, senderName } })`.
+// Invoked from the iOS app via `supabase.functions.invoke("send-game-invite-push", { body: { receiverId, gameId } })`.
 //
 // Required Supabase secrets (set with `supabase secrets set ...`):
 //   - APNS_TEAM_ID            Apple Developer Team ID (10 chars)
@@ -36,9 +36,14 @@ const APNS_PRIVATE_KEY = Deno.env.get("APNS_PRIVATE_KEY") ?? "";
 const APNS_BUNDLE_ID = Deno.env.get("APNS_BUNDLE_ID") ?? "";
 const APNS_USE_SANDBOX = (Deno.env.get("APNS_USE_SANDBOX") ?? "false").toLowerCase() === "true";
 
-const APNS_HOST = APNS_USE_SANDBOX
-  ? "https://api.sandbox.push.apple.com"
-  : "https://api.push.apple.com";
+const APNS_PROD_HOST = "https://api.push.apple.com";
+const APNS_SANDBOX_HOST = "https://api.sandbox.push.apple.com";
+
+// Which host to TRY FIRST. We fall back to the other one automatically (see
+// `sendApns`), so this is only an optimisation — getting it wrong costs one extra
+// round trip, not a lost notification.
+const APNS_PRIMARY_HOST = APNS_USE_SANDBOX ? APNS_SANDBOX_HOST : APNS_PROD_HOST;
+const APNS_FALLBACK_HOST = APNS_USE_SANDBOX ? APNS_PROD_HOST : APNS_SANDBOX_HOST;
 
 // APNs reason strings that mean the device token is permanently invalid
 // (Apple Push Notification Service docs, table of "reason" values).
@@ -149,12 +154,13 @@ async function sendApnsOnce(
   deviceToken: string,
   payload: Record<string, unknown>,
   jwt: string,
+  host: string,
 ): Promise<ApnsResult> {
   // Per-request 10s timeout so a slow APNs host can never hang the function.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
-    const res = await fetch(`${APNS_HOST}/3/device/${deviceToken}`, {
+    const res = await fetch(`${host}/3/device/${deviceToken}`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -190,18 +196,19 @@ async function sendApnsOnce(
   }
 }
 
-async function sendApns(
+async function sendApnsWithRetries(
   deviceToken: string,
   payload: Record<string, unknown>,
+  host: string,
 ): Promise<ApnsResult> {
   let jwt = await getApnsJWT();
-  let result = await sendApnsOnce(deviceToken, payload, jwt);
+  let result = await sendApnsOnce(deviceToken, payload, jwt, host);
 
   // Refresh JWT and retry once on provider-token failure (403).
   if (!result.ok && result.reason && PROVIDER_TOKEN_REASONS.has(result.reason)) {
     cachedToken = null;
     jwt = await getApnsJWT(true);
-    result = await sendApnsOnce(deviceToken, payload, jwt);
+    result = await sendApnsOnce(deviceToken, payload, jwt, host);
   }
 
   // One retry with short backoff on transient 5xx / 429 / network errors.
@@ -210,7 +217,43 @@ async function sendApns(
   const isTransientStatus = result.status === 429 || result.status === 503 || result.status === 500;
   if (!result.ok && (isTransientNetwork || isTransientReason || isTransientStatus)) {
     await new Promise((r) => setTimeout(r, 400));
-    result = await sendApnsOnce(deviceToken, payload, jwt);
+    result = await sendApnsOnce(deviceToken, payload, jwt, host);
+  }
+
+  return result;
+}
+
+async function sendApns(
+  deviceToken: string,
+  payload: Record<string, unknown>,
+): Promise<ApnsResult> {
+  let result = await sendApnsWithRetries(deviceToken, payload, APNS_PRIMARY_HOST);
+
+  // ENVIRONMENT FALLBACK — the fix for "invites send but nothing arrives".
+  //
+  // A device token is only valid against the APNs environment that ISSUED it. An app
+  // built with `aps-environment: development` (any Xcode run, which is what this app
+  // ships today) registers a SANDBOX token; a TestFlight/App Store build registers a
+  // PRODUCTION one. Send a sandbox token to the production host and APNs replies
+  // `BadDeviceToken` — the request "succeeds", the function returns 200, and the push
+  // simply never arrives.
+  //
+  // Worse, `BadDeviceToken` is in TOKEN_INVALID_REASONS, so we then DELETED the
+  // recipient's token as permanently dead. It re-registered on their next app launch
+  // and got deleted again on the next invite: a silent, self-erasing loop.
+  //
+  // Rather than depend on APNS_USE_SANDBOX being flipped correctly for each build
+  // flavour — and remembering to flip it back before shipping — just try the other
+  // environment before believing the token is bad. This also lets a dev build and a
+  // TestFlight build work at the same time, which a single flag can never do.
+  if (!result.ok && result.reason === "BadDeviceToken") {
+    console.log(
+      `↩️ BadDeviceToken on ${APNS_PRIMARY_HOST} — retrying against ${APNS_FALLBACK_HOST}`,
+    );
+    const alt = await sendApnsWithRetries(deviceToken, payload, APNS_FALLBACK_HOST);
+    if (alt.ok) return alt;
+    // Only if BOTH environments reject it is the token genuinely dead.
+    return alt.reason === "BadDeviceToken" ? alt : result;
   }
 
   return result;
