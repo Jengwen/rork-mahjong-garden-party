@@ -3046,6 +3046,48 @@ class OnlineGameViewModel {
     }
 
     func applyRemoteGame(_ game: OnlineGame, gameViewModel: GameViewModel) async {
+        // HOST-ABANDONED RECOVERY — deliberately BEFORE the `updatedAt` guard below.
+        //
+        // `leaveGame()` deletes the leaver's participant row, so a LIVE game whose
+        // participant list no longer contains the HOST has been abandoned. That is
+        // terminal for everyone else: the host drives every bot turn and owns call-window
+        // finalization, so nothing will ever move again. The invitee is left staring at a
+        // dead table — status "playing", a bot's turn that will never come, no state
+        // updates — with no way out but force-quitting the app.
+        //
+        // The DB-completed fallback below cannot rescue this, because the game was never
+        // marked completed: the row still says "playing" with an empty winnerName. The
+        // host simply walked away mid-game — won and tapped through the overlay before the
+        // completion write landed, force-quit, or crashed.
+        //
+        // This check MUST run before `guard newUpdated > lastAppliedUpdatedAt`: an
+        // abandoned game's `updated_at` never changes again, so anything after that guard
+        // would never execute.
+        if let gameId = game.id,
+           game.status != OnlineGameStatus.waiting.rawValue,
+           game.status != OnlineGameStatus.completed.rawValue,
+           let myId = myUserId,
+           game.hostId != myId,
+           !currentParticipants.isEmpty,
+           !currentParticipants.contains(where: { $0.userId == game.hostId }) {
+            // Re-fetch before ending someone's game on the strength of a stale list.
+            let fresh = (try? await service.fetchParticipants(gameId: gameId)) ?? []
+            if !fresh.isEmpty, !fresh.contains(where: { $0.userId == game.hostId }) {
+                currentParticipants = fresh
+                if !gameViewModel.showEndGameOverlay {
+                    gameViewModel.gameStatus = .completed
+                    gameViewModel.showEndGameOverlay = true
+                    gameViewModel.isWallGame = false
+                    gameViewModel.winnerName = ""
+                    gameViewModel.gameMessage = "The host left — this game has ended."
+                    print("🚪 host is no longer a participant — ending the abandoned game")
+                }
+                stopCharlestonHeartbeats()
+                stopPlayPhaseHeartbeats()
+                return
+            }
+        }
+
         let newUpdated = game.updatedAt ?? ""
         guard newUpdated > lastAppliedUpdatedAt else { return }
         lastAppliedUpdatedAt = newUpdated
@@ -3169,6 +3211,33 @@ class OnlineGameViewModel {
 
     func leaveGame() async {
         guard let gameId = currentGameId else { return }
+
+        // A HOST leaving a LIVE game must kill the game for everyone, FIRST.
+        //
+        // The host drives every bot turn and owns call-window finalization, so once they
+        // walk away nothing at the table can ever advance again. If the row is left saying
+        // "playing", every other player is stranded on a dead board with no way out but
+        // force-quitting — a bot's turn that will never come, and no state updates.
+        //
+        // We can't rely on the normal end-of-game write having landed. A host who wins and
+        // immediately taps through the overlay to exit races their own completion write
+        // against this very teardown (`stopRealtime`, the socket disconnect, and
+        // `currentGameId = nil` below all fire while it's still in flight) — which is
+        // exactly how a finished, won game ends up persisted as `status: playing` with an
+        // empty `winnerName`. This runs BEFORE any of that teardown, and is a status-only
+        // patch so it stays small and doesn't clobber `game_data`.
+        if isHost,
+           let game = currentGame,
+           game.status != OnlineGameStatus.completed.rawValue,
+           game.status != OnlineGameStatus.waiting.rawValue {
+            do {
+                try await service.markGameCompleted(gameId: gameId)
+                print("🏁 host left a live game — marked it completed so no one is stranded")
+            } catch {
+                print("⚠️ leaveGame: failed to mark game completed: \(error)")
+            }
+        }
+
         stopRealtime()
         // FRESH-SOCKET GUARANTEE FOR THE NEXT GAME.
         // stopRealtime() cancels the realtime task and unsubscribes the channel
