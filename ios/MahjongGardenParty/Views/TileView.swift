@@ -257,10 +257,12 @@ enum TileSize {
     /// `.medium` is 44x60, so tiles keep a ~1.36 height:width ratio.
     static let aspectRatio: CGFloat = 60.0 / 44.0
 
-    /// Clamped so a scaled tile can never collapse to an untappable sliver or
-    /// balloon past the largest iPad preset.
+    /// Clamped so a scaled tile can never collapse to an untappable sliver, nor grow
+    /// absurdly large. The ceiling is above the old `.iPadMedium` (62) because the
+    /// Charleston deliberately boosts its tiles past the play-phase rack — see
+    /// `CharlestonView.CharlestonLayout.tileBoost`.
     static func fitting(width: CGFloat) -> TileSize {
-        .scaled(width: min(max(width, 24), 64))
+        .scaled(width: min(max(width, 24), 82))
     }
 
     var width: CGFloat {

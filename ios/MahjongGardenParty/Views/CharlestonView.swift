@@ -34,6 +34,9 @@ struct CharlestonView: View {
     /// shorter than a standard iPhone portrait — an SE, or *any* iPhone in
     /// landscape — hit that. Everything now scales off the measured height.
     struct CharlestonLayout {
+        /// How much larger Charleston tiles are than the surrounding chrome's scale.
+        static let tileBoost: CGFloat = 1.28
+
         let tile: TileSize
         let scale: CGFloat
         let hPadding: CGFloat
@@ -56,9 +59,16 @@ struct CharlestonView: View {
             let s = min(isPad ? 1.4 : 1.0, max(0.62, raw))
             self.scale = s
 
-            // Two rows of tiles are the single biggest vertical consumer, so they
-            // take the scale directly.
-            self.tile = TileSize.fitting(width: TileSize.referenceWidth * s)
+            // Tiles take the layout scale AND a deliberate boost on top of it.
+            //
+            // The chrome (header, indicator, buttons, paddings) keeps plain `scale`;
+            // only the tiles get `tileBoost`. They're the thing you actually read and
+            // tap here — you're picking three specific tiles out of thirteen — and at
+            // 1:1 with the chrome they came out no bigger than the play-phase rack,
+            // where you're only glancing at them. The horizontal hand row already
+            // scrolls, so widening them costs nothing there, and the enclosing
+            // ScrollView absorbs the extra height on short screens.
+            self.tile = TileSize.fitting(width: TileSize.referenceWidth * s * Self.tileBoost)
             self.tileSpacing = (isPad ? 5 : 3) * s
             self.hPadding = (isPad ? 48 : 32) * min(s, 1.0)
             self.vPadding = (isPad ? 28 : 22) * s

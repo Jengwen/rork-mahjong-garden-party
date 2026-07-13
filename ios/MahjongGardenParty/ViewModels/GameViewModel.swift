@@ -1765,7 +1765,12 @@ class GameViewModel {
             Task { @MainActor [weak self] in
                 // Give real players time to register a counter-mahjong / call
                 // before the host commits a bot's claim on the discard.
-                try? await Task.sleep(for: .seconds(Double.random(in: 12.0...15.0)))
+                // Counter-claim window: a human may want to declare Mahjong on this same
+                // discard, so the host holds before committing the bot's claim. But
+                // 12-15s froze the entire table on every bot Mahjong — by far the
+                // longest stall left in the game. 6-8s is still a real window to react
+                // in, and the call prompt is already on screen by the time it starts.
+                try? await Task.sleep(for: .seconds(Double.random(in: 6.0...8.0)))
                 guard let self else { return }
                 self.awaitingCall = false
                 // Verify the bot still has a winning hand AND we're still on the
@@ -1846,7 +1851,7 @@ class GameViewModel {
                 // same tile) but was an excessive, unexplained pause for an
                 // ordinary pung/kong/quint, especially when several bot calls
                 // chain together in a row.
-                try? await Task.sleep(for: .seconds(Double.random(in: 3.0...4.5)))
+                try? await Task.sleep(for: .seconds(Double.random(in: 2.0...3.0)))
                 guard let self else { return }
                 self.awaitingCall = false
                 // Re-validate before acting: if the discard has moved on (a newer
@@ -1974,7 +1979,7 @@ class GameViewModel {
                 // 12-15s to something that actually matches "slight" — all humans
                 // have already responded by the time this branch runs, so there's
                 // no reason left to wait long here.
-                try? await Task.sleep(for: .seconds(Double.random(in: 3.0...4.5)))
+                try? await Task.sleep(for: .seconds(Double.random(in: 2.0...3.0)))
                 guard let self else { return }
                 self.awaitingCall = false
                 // Same staleness guard as the solo bot-call branch: don't act on a
@@ -2062,7 +2067,7 @@ class GameViewModel {
             Task {
                 // Slower bot thinking so real players have time to read the table
                 // (and to spot any pending call window) before the bot draws.
-                try? await Task.sleep(for: .seconds(Double.random(in: 1.5...2.5)))
+                try? await Task.sleep(for: .seconds(Double.random(in: 1.0...1.7)))
                 executeBotTurn()
             }
         } else {
@@ -3495,7 +3500,7 @@ class GameViewModel {
                 // Host drives a bot whose turn just became active via remote state.
                 let captured = currentPlayerIndex
                 Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(Double.random(in: 1.5...2.5)))
+                    try? await Task.sleep(for: .seconds(Double.random(in: 1.0...1.7)))
                     guard let self else { return }
                     if self.currentPlayerIndex == captured,
                        captured < self.players.count,
