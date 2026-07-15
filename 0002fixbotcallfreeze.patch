@@ -1,0 +1,45 @@
+From a69ac8aef60f20d683d14eabc2711ef3f9fc27de Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 23:48:42 +0000
+Subject: [PATCH] Fix online game freezing forever after a bot call empties its
+ hand
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+executeBotDiscard silently returned when a bot's hand was empty after a
+Pung/Kong/Quint/Sextet call, with no discard, no broadcast, and no turn
+advance — hasDrawnThisTurn stayed stuck true and the turn was parked on
+that seat forever for every client. This game has no Kong replacement
+draw, so a bot several exposures deep can be left with exactly as many
+concealed tiles as a call needs, hitting this exact edge case. Falls
+back to proceedWithTurn(), matching how hostForceAdvanceRemoteSeat
+already handles the same empty-hand case.
+---
+ ios/MahjongGardenParty/ViewModels/GameViewModel.swift | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/ios/MahjongGardenParty/ViewModels/GameViewModel.swift b/ios/MahjongGardenParty/ViewModels/GameViewModel.swift
+index 2f1ed01..cea120b 100644
+--- a/ios/MahjongGardenParty/ViewModels/GameViewModel.swift
++++ b/ios/MahjongGardenParty/ViewModels/GameViewModel.swift
+@@ -2413,7 +2413,15 @@ class GameViewModel {
+     }
+ 
+     private func executeBotDiscard(botIdx: Int) {
+-        guard !players[botIdx].hand.isEmpty else { return }
++        // A call (Pung/Kong/Quint/Sextet) can, in rare cases, consume a bot's
++        // entire remaining concealed hand — this game has no Kong replacement
++        // draw, so a bot several exposures deep can be left with exactly as
++        // many concealed tiles as the call needed. Returning silently here
++        // left `hasDrawnThisTurn` stuck at true forever with no discard, no
++        // broadcast, and no turn advance: an unrecoverable freeze for every
++        // other client. Fall back to advancing the turn, matching
++        // `hostForceAdvanceRemoteSeat`'s handling of the same edge case.
++        guard !players[botIdx].hand.isEmpty else { proceedWithTurn(); return }
+ 
+         let discardIndex = HandMatcher.selectBotDiscard(hand: players[botIdx].hand, targetHand: players[botIdx].targetHand)
+         var discarded = players[botIdx].hand.remove(at: discardIndex)
+-- 
+2.43.0
+
