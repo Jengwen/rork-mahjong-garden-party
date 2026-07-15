@@ -1,0 +1,158 @@
+From 984bf0de7153143fe09d7d7f914a5ae16bd15694 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 22:11:50 +0000
+Subject: [PATCH] Add Sextet call for the 2026 card's 6-flower lines
+
+Calling previously topped out at Quint (5 tiles), so the two 2026 card
+hands needing a 6-of-a-kind flower group (Like Numbers #1, Run #6)
+could never be completed by calling a discard. Adds a Sextet CallType
+and wires it through exposure detection, bot call selection, and
+manual tile selection, gated to flower discards only since Sextet
+groups only appear on Flowers on this card.
+---
+ ios/MahjongGardenParty/Models/GameState.swift |  1 +
+ .../Services/HandMatcher.swift                | 10 +++-
+ .../ViewModels/GameViewModel.swift            | 50 +++++++++++++++++--
+ 3 files changed, 57 insertions(+), 4 deletions(-)
+
+diff --git a/ios/MahjongGardenParty/Models/GameState.swift b/ios/MahjongGardenParty/Models/GameState.swift
+index f9872e5..1b3a00e 100644
+--- a/ios/MahjongGardenParty/Models/GameState.swift
++++ b/ios/MahjongGardenParty/Models/GameState.swift
+@@ -88,6 +88,7 @@ nonisolated enum CallType: String, Sendable {
+     case pung = "Pung"
+     case kong = "Kong"
+     case quint = "Quint"
++    case sextet = "Sextet"
+     case mahjong = "Mahjong!"
+ }
+ 
+diff --git a/ios/MahjongGardenParty/Services/HandMatcher.swift b/ios/MahjongGardenParty/Services/HandMatcher.swift
+index 6d29b37..f087b55 100644
+--- a/ios/MahjongGardenParty/Services/HandMatcher.swift
++++ b/ios/MahjongGardenParty/Services/HandMatcher.swift
+@@ -287,9 +287,14 @@ nonisolated struct HandMatcher {
+                 if group.count == 4 && (handMatches + jokersAvailable) >= 3 && !calls.contains(.kong) {
+                     calls.append(.kong)
+                 }
+-                if group.count >= 5 && (handMatches + jokersAvailable) >= (group.count - 1) && !calls.contains(.quint) {
++                if group.count == 5 && (handMatches + jokersAvailable) >= 4 && !calls.contains(.quint) {
+                     calls.append(.quint)
+                 }
++                // A sextet (6 of a kind) only exists on the card for Flowers — restrict
++                // the call to flower discards so a numbered tile can never offer it.
++                if group.count == 6 && tileKey.suit == .flower && (handMatches + jokersAvailable) >= 5 && !calls.contains(.sextet) {
++                    calls.append(.sextet)
++                }
+             }
+         }
+ 
+@@ -343,6 +348,9 @@ nonisolated struct HandMatcher {
+         if (matchCount + jokerCount) >= 3 { calls.append(.kong) }
+         // Quint was missing entirely, so this path could never surface a 5-tile call.
+         if (matchCount + jokerCount) >= 4 { calls.append(.quint) }
++        // Sextet (6 of a kind) only exists on the card for Flowers, so restrict it
++        // to a discarded flower rather than offering it for any tile.
++        if tile.suit == .flower && (matchCount + jokerCount) >= 5 { calls.append(.sextet) }
+         calls.append(.mahjong)
+         return calls
+     }
+diff --git a/ios/MahjongGardenParty/ViewModels/GameViewModel.swift b/ios/MahjongGardenParty/ViewModels/GameViewModel.swift
+index f7f9732..2f1ed01 100644
+--- a/ios/MahjongGardenParty/ViewModels/GameViewModel.swift
++++ b/ios/MahjongGardenParty/ViewModels/GameViewModel.swift
+@@ -1241,7 +1241,9 @@ class GameViewModel {
+     func callBestAvailable() {
+         let nonMahjong = availableCalls.filter { $0 != .mahjong }
+         let best: CallType
+-        if nonMahjong.contains(.quint) {
++        if nonMahjong.contains(.sextet) {
++            best = .sextet
++        } else if nonMahjong.contains(.quint) {
+             best = .quint
+         } else if nonMahjong.contains(.kong) {
+             best = .kong
+@@ -1264,6 +1266,7 @@ class GameViewModel {
+         case .pung: requiredFromHand = 2
+         case .kong: requiredFromHand = 3
+         case .quint: requiredFromHand = 4
++        case .sextet: requiredFromHand = 5
+         case .mahjong:
+             callTile(type: .mahjong)
+             return
+@@ -1491,6 +1494,8 @@ class GameViewModel {
+             executeKong(playerIndex: playerIndex, discarded: discarded)
+         case .quint:
+             executeQuint(playerIndex: playerIndex, discarded: discarded)
++        case .sextet:
++            executeSextet(playerIndex: playerIndex, discarded: discarded)
+         case .mahjong:
+             attemptMahjong(playerIndex: playerIndex, claimedTile: discarded)
+             return
+@@ -1628,7 +1633,41 @@ class GameViewModel {
+         gameMessage = "\(players[playerIndex].profile.displayName) called Quint! \(players[playerIndex].isBot ? "" : "Now discard a tile.")"
+     }
+ 
+-    /// Compute non-mahjong call options (pung/kong/quint) for a specific seat
++    private func executeSextet(playerIndex: Int, discarded: MahjongTile) {
++        let matchingIndices = players[playerIndex].hand.indices.filter {
++            players[playerIndex].hand[$0].matchesForGrouping(discarded)
++        }
++
++        var exposedSet: [MahjongTile] = [discarded]
++
++        let realMatches = Array(matchingIndices.prefix(5))
++        var jokersNeeded = 5 - realMatches.count
++
++        let indicesToRemove = realMatches.sorted(by: >)
++        for idx in indicesToRemove {
++            exposedSet.append(players[playerIndex].hand.remove(at: idx))
++        }
++
++        if jokersNeeded > 0 {
++            let jokerIndices = players[playerIndex].hand.indices.filter {
++                players[playerIndex].hand[$0].suit == .joker
++            }
++            for jIdx in jokerIndices.prefix(jokersNeeded).sorted(by: >) {
++                exposedSet.append(players[playerIndex].hand.remove(at: jIdx))
++                jokersNeeded -= 1
++            }
++        }
++
++        if let lastIdx = discardPile.lastIndex(where: { $0.id == discarded.id }) {
++            discardPile.remove(at: lastIdx)
++        }
++        players[playerIndex].exposedSets.append(exposedSet)
++        currentPlayerIndex = playerIndex
++        hasDrawnThisTurn = true
++        gameMessage = "\(players[playerIndex].profile.displayName) called Sextet! \(players[playerIndex].isBot ? "" : "Now discard a tile.")"
++    }
++
++    /// Compute non-mahjong call options (pung/kong/quint/sextet) for a specific seat
+     /// against the current discard. Used to decide who is eligible to respond.
+     private func nonMahjongCallsFor(seatIndex i: Int, discarded: MahjongTile) -> [CallType] {
+         guard i < players.count else { return [] }
+@@ -1647,6 +1686,9 @@ class GameViewModel {
+         if (matchCount + jokerCount) >= 2 { calls.append(.pung) }
+         if (matchCount + jokerCount) >= 3 { calls.append(.kong) }
+         if (matchCount + jokerCount) >= 4 { calls.append(.quint) }
++        // Sextet (6 of a kind) only exists on the card for Flowers, so restrict it
++        // to a discarded flower rather than offering it for any tile.
++        if discarded.suit == .flower && (matchCount + jokerCount) >= 5 { calls.append(.sextet) }
+         return calls
+     }
+ 
+@@ -1726,7 +1768,9 @@ class GameViewModel {
+                     let shouldCall = shouldBotCall(botIndex: i, discarded: discarded, calls: botCalls)
+                     if shouldCall {
+                         let callType: CallType
+-                        if botCalls.contains(.quint) {
++                        if botCalls.contains(.sextet) {
++                            callType = .sextet
++                        } else if botCalls.contains(.quint) {
+                             callType = .quint
+                         } else if botCalls.contains(.kong) {
+                             callType = .kong
+-- 
+2.43.0
+
