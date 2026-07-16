@@ -1241,7 +1241,9 @@ class GameViewModel {
     func callBestAvailable() {
         let nonMahjong = availableCalls.filter { $0 != .mahjong }
         let best: CallType
-        if nonMahjong.contains(.quint) {
+        if nonMahjong.contains(.sextet) {
+            best = .sextet
+        } else if nonMahjong.contains(.quint) {
             best = .quint
         } else if nonMahjong.contains(.kong) {
             best = .kong
@@ -1264,6 +1266,7 @@ class GameViewModel {
         case .pung: requiredFromHand = 2
         case .kong: requiredFromHand = 3
         case .quint: requiredFromHand = 4
+        case .sextet: requiredFromHand = 5
         case .mahjong:
             callTile(type: .mahjong)
             return
@@ -1491,6 +1494,8 @@ class GameViewModel {
             executeKong(playerIndex: playerIndex, discarded: discarded)
         case .quint:
             executeQuint(playerIndex: playerIndex, discarded: discarded)
+        case .sextet:
+            executeSextet(playerIndex: playerIndex, discarded: discarded)
         case .mahjong:
             attemptMahjong(playerIndex: playerIndex, claimedTile: discarded)
             return
@@ -1628,7 +1633,41 @@ class GameViewModel {
         gameMessage = "\(players[playerIndex].profile.displayName) called Quint! \(players[playerIndex].isBot ? "" : "Now discard a tile.")"
     }
 
-    /// Compute non-mahjong call options (pung/kong/quint) for a specific seat
+    private func executeSextet(playerIndex: Int, discarded: MahjongTile) {
+        let matchingIndices = players[playerIndex].hand.indices.filter {
+            players[playerIndex].hand[$0].matchesForGrouping(discarded)
+        }
+
+        var exposedSet: [MahjongTile] = [discarded]
+
+        let realMatches = Array(matchingIndices.prefix(5))
+        var jokersNeeded = 5 - realMatches.count
+
+        let indicesToRemove = realMatches.sorted(by: >)
+        for idx in indicesToRemove {
+            exposedSet.append(players[playerIndex].hand.remove(at: idx))
+        }
+
+        if jokersNeeded > 0 {
+            let jokerIndices = players[playerIndex].hand.indices.filter {
+                players[playerIndex].hand[$0].suit == .joker
+            }
+            for jIdx in jokerIndices.prefix(jokersNeeded).sorted(by: >) {
+                exposedSet.append(players[playerIndex].hand.remove(at: jIdx))
+                jokersNeeded -= 1
+            }
+        }
+
+        if let lastIdx = discardPile.lastIndex(where: { $0.id == discarded.id }) {
+            discardPile.remove(at: lastIdx)
+        }
+        players[playerIndex].exposedSets.append(exposedSet)
+        currentPlayerIndex = playerIndex
+        hasDrawnThisTurn = true
+        gameMessage = "\(players[playerIndex].profile.displayName) called Sextet! \(players[playerIndex].isBot ? "" : "Now discard a tile.")"
+    }
+
+    /// Compute non-mahjong call options (pung/kong/quint/sextet) for a specific seat
     /// against the current discard. Used to decide who is eligible to respond.
     private func nonMahjongCallsFor(seatIndex i: Int, discarded: MahjongTile) -> [CallType] {
         guard i < players.count else { return [] }
@@ -1647,6 +1686,9 @@ class GameViewModel {
         if (matchCount + jokerCount) >= 2 { calls.append(.pung) }
         if (matchCount + jokerCount) >= 3 { calls.append(.kong) }
         if (matchCount + jokerCount) >= 4 { calls.append(.quint) }
+        // Sextet (6 of a kind) only exists on the card for Flowers, so restrict it
+        // to a discarded flower rather than offering it for any tile.
+        if discarded.suit == .flower && (matchCount + jokerCount) >= 5 { calls.append(.sextet) }
         return calls
     }
 
@@ -1726,7 +1768,9 @@ class GameViewModel {
                     let shouldCall = shouldBotCall(botIndex: i, discarded: discarded, calls: botCalls)
                     if shouldCall {
                         let callType: CallType
-                        if botCalls.contains(.quint) {
+                        if botCalls.contains(.sextet) {
+                            callType = .sextet
+                        } else if botCalls.contains(.quint) {
                             callType = .quint
                         } else if botCalls.contains(.kong) {
                             callType = .kong
@@ -2369,7 +2413,15 @@ class GameViewModel {
     }
 
     private func executeBotDiscard(botIdx: Int) {
-        guard !players[botIdx].hand.isEmpty else { return }
+        // A call (Pung/Kong/Quint/Sextet) can, in rare cases, consume a bot's
+        // entire remaining concealed hand — this game has no Kong replacement
+        // draw, so a bot several exposures deep can be left with exactly as
+        // many concealed tiles as the call needed. Returning silently here
+        // left `hasDrawnThisTurn` stuck at true forever with no discard, no
+        // broadcast, and no turn advance: an unrecoverable freeze for every
+        // other client. Fall back to advancing the turn, matching
+        // `hostForceAdvanceRemoteSeat`'s handling of the same edge case.
+        guard !players[botIdx].hand.isEmpty else { proceedWithTurn(); return }
 
         let discardIndex = HandMatcher.selectBotDiscard(hand: players[botIdx].hand, targetHand: players[botIdx].targetHand)
         var discarded = players[botIdx].hand.remove(at: discardIndex)
