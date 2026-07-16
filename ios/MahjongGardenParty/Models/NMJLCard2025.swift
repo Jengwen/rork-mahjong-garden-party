@@ -1317,7 +1317,8 @@ extension NMJLCard {
                 HandGroup(count: 4, tile: .anySuit(slot: 1, value: 8)),
             ],
             points: 25,
-            concealed: false
+            concealed: false,
+            requireUniqueSuits: true
         ),
         NMJLHand(
             id: "2026_2468_3",
@@ -1393,7 +1394,8 @@ extension NMJLCard {
                 HandGroup(count: 4, tile: .anySuit(slot: 2, value: 2)),
             ],
             points: 25,
-            concealed: false
+            concealed: false,
+            requireUniqueSuits: true
         ),
         NMJLHand(
             id: "2026_2468_8",
@@ -1411,7 +1413,8 @@ extension NMJLCard {
                 HandGroup(count: 3, tile: .anySuit(slot: 2, value: 8)),
             ],
             points: 30,
-            concealed: true
+            concealed: true,
+            requireUniqueSuits: true
         ),
     ]
 

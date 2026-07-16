@@ -137,6 +137,21 @@ class OnlineGameViewModel {
         let senderSeat: Int
     }
 
+    /// TINY liveness ping sent by the host's routine play-phase heartbeat instead
+    /// of a full `state_update`. Real changes already propagate reliably through
+    /// the immediate move broadcast + retry burst + durable `game_actions` insert
+    /// in `syncAfterMove` — this ping carries no game state at all. Its only job
+    /// is to keep an invitee's `lastStateUpdateAt` fresh during a quiet stretch
+    /// (e.g. the invitee is still deciding their move) so the staleness-escalation
+    /// tiers in `ensurePlayPhaseInviteePull` don't misfire a sync request, DB
+    /// pull, or — worst case — a disruptive realtime reconnect over nothing.
+    /// Replacing a ~6s full-state re-serialize/broadcast/merge with this avoids
+    /// paying that cost on every tick for the entire lifetime of a game.
+    nonisolated struct HeartbeatPingPayload: Codable, Sendable {
+        let gameId: String
+        let senderSeat: Int
+    }
+
     /// LIGHTWEIGHT CHARLESTON PASS BROADCAST. Carries only the minimum data the
     /// host needs to record a seat's pass: the seat index, current phase, the
     /// chosen tiles, and the seat's hand AFTER removing those tiles. Sent in
@@ -887,6 +902,20 @@ class OnlineGameViewModel {
         }
     }
 
+    /// See `HeartbeatPingPayload`. Sends just `{gameId, senderSeat}` — no wall,
+    /// hands, discard pile, or anything else — so the routine play-phase
+    /// heartbeat tick doesn't pay full serialize/broadcast/decode/merge cost
+    /// when nothing has actually changed since the last real move.
+    private func broadcastHeartbeatPing(gameId: String, senderSeat: Int) async {
+        guard let channel = realtimeChannel else { return }
+        let payload = HeartbeatPingPayload(gameId: gameId, senderSeat: senderSeat)
+        do {
+            try await channel.broadcast(event: "heartbeat_ping", message: payload)
+        } catch {
+            print("⚠️ broadcastHeartbeatPing: \(error)")
+        }
+    }
+
     /// Host Charleston sync. Writes the host's full state but UNIONs the server's
     /// `charlestonPendingPasses` with the host's own — so a concurrent invitee write
     /// that landed after the host's last fetch is preserved (the host will pick up that
@@ -1618,13 +1647,12 @@ class OnlineGameViewModel {
                       let gameId = self.currentGameId,
                       gameViewModel.gameStatus == .playing,
                       !gameViewModel.showEndGameOverlay else { break }
-                let state = gameViewModel.serializeState()
-                await self.broadcastStateUpdate(
-                    gameId: gameId,
-                    status: OnlineGameStatus.playing.rawValue,
-                    state: state,
-                    senderSeat: gameViewModel.localSeatIndex
-                )
+                // Routine tick: a tiny liveness ping, not a full state re-serialize.
+                // Real moves already propagate via the immediate broadcast + retry
+                // burst + durable `game_actions` insert in `syncAfterMove` — this
+                // heartbeat's job is just to keep invitees' staleness clock fresh
+                // during quiet stretches, not to re-deliver state nothing needs.
+                await self.broadcastHeartbeatPing(gameId: gameId, senderSeat: gameViewModel.localSeatIndex)
 
                 // Proactive self-heal: previously this whole check only ran when
                 // `applyRemoteState` fired in response to a fresh incoming update,
@@ -2265,6 +2293,7 @@ class OnlineGameViewModel {
             let botSeatsBroadcast = channel.broadcastStream(event: "bot_seats")
             let gameStartedBroadcast = channel.broadcastStream(event: "game_started")
             let stateUpdateBroadcast = channel.broadcastStream(event: "state_update")
+            let heartbeatPingBroadcast = channel.broadcastStream(event: "heartbeat_ping")
             let joinedBroadcast = channel.broadcastStream(event: "joined")
             let charlestonPassBroadcast = channel.broadcastStream(event: "charleston_pass")
             let charlestonPassAckBroadcast = channel.broadcastStream(event: "charleston_pass_ack")
@@ -2357,6 +2386,13 @@ class OnlineGameViewModel {
                         if Task.isCancelled { break }
                         guard let self, let gameViewModel else { break }
                         await self.handleStateUpdateBroadcast(event, gameViewModel: gameViewModel)
+                    }
+                }
+                group.addTask { [weak self, weak gameViewModel] in
+                    for await event in heartbeatPingBroadcast {
+                        if Task.isCancelled { break }
+                        guard let self, let gameViewModel else { break }
+                        await self.handleHeartbeatPingBroadcast(event, gameViewModel: gameViewModel)
                     }
                 }
                 group.addTask { [weak self] in
@@ -2594,6 +2630,60 @@ class OnlineGameViewModel {
             if payload.status != OnlineGameStatus.waiting.rawValue && !showGameBoard { showGameBoard = true }
         } catch {
             print("⚠️ state_update decode failed: \(error)")
+        }
+    }
+
+    /// Apply a `heartbeat_ping` broadcast. See `HeartbeatPingPayload` — this
+    /// carries no game state, so unlike `handleStateUpdateBroadcast` there is
+    /// nothing to merge: just refresh the staleness clock that
+    /// `ensurePlayPhaseInviteePull` / `ensurePlayPhaseHostHeartbeat` use to
+    /// decide whether to escalate (sync request → DB pull → reconnect).
+    private func handleHeartbeatPingBroadcast(_ event: JSONObject, gameViewModel: GameViewModel) async {
+        let payloadObject: JSONObject
+        if case .object(let inner) = event["payload"] ?? .null {
+            payloadObject = inner
+        } else {
+            payloadObject = event
+        }
+        guard let data = try? JSONEncoder().encode(payloadObject),
+              let payload = try? JSONDecoder().decode(HeartbeatPingPayload.self, from: data) else {
+            return
+        }
+        // Ignore our own echo.
+        if payload.senderSeat == gameViewModel.localSeatIndex { return }
+        lastStateUpdateSenderSeat = payload.senderSeat
+        lastStateUpdateAt = Date()
+
+        // TERMINAL RE-ASSERT. The play-phase heartbeat loop only runs while the
+        // sender is still `.playing`, so receiving a ping means that peer has NOT
+        // seen the end of the game. If WE have already finished — declared Mahjong
+        // or a wall game — that peer is behind and needs our terminal state.
+        //
+        // This restores a recovery path that used to be implicit: when the host
+        // heartbeat re-broadcast a FULL playing `state_update`, it reached the
+        // winner's `applyRemoteState` and tripped the COMPLETED IS TERMINAL guard,
+        // which re-pushed the win. The lightweight ping carries no state and never
+        // enters `applyRemoteState`, so without this an invitee's win whose
+        // original broadcast was dropped never reaches the host — the invitee's
+        // own retry loops stop the instant it completes, and its DB write may be
+        // RLS-blocked. The host would sit parked on its own turn forever (exactly
+        // the "host never got the Mahjong end-of-game" report). Re-broadcasting is
+        // self-limiting: once the host absorbs our terminal state it leaves
+        // `.playing` and stops pinging, so this stops firing.
+        //
+        // Broadcast the terminal state DIRECTLY rather than via `syncAfterMove`:
+        // a completed hand is authoritative and must never be suppressed by that
+        // method's "server is ahead on discard count" guard, which trips when the
+        // win was declared on a CALLED discard (the winner removed the claimed
+        // tile, so its pile is one shorter than the host's still-`.playing` row).
+        if gameViewModel.gameStatus == .completed, let gameId = currentGameId {
+            let state = gameViewModel.serializeState()
+            await broadcastStateUpdate(
+                gameId: gameId,
+                status: OnlineGameStatus.completed.rawValue,
+                state: state,
+                senderSeat: gameViewModel.localSeatIndex
+            )
         }
     }
 
