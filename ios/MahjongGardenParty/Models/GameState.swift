@@ -88,6 +88,7 @@ nonisolated enum CallType: String, Sendable {
     case pung = "Pung"
     case kong = "Kong"
     case quint = "Quint"
+    case sextet = "Sextet"
     case mahjong = "Mahjong!"
 }
 
