@@ -417,11 +417,17 @@ class OnlineGameService {
     }
 
     func respondToInvite(inviteId: String, accept: Bool) async throws {
+        guard let userId = currentUserId else { throw DatabaseError.notAuthenticated }
         let newStatus = accept ? InviteStatus.accepted.rawValue : InviteStatus.declined.rawValue
+        // Only the invited player may answer their own invite. Previously this
+        // updated by row id alone, leaving authorization entirely to whatever
+        // RLS happens to be live on game_invites; the receiver_id constraint
+        // makes the client correct regardless.
         try await client
             .from("game_invites")
             .update(["status": newStatus])
             .eq("id", value: inviteId)
+            .eq("receiver_id", value: userId)
             .execute()
     }
 
@@ -512,14 +518,15 @@ class OnlineGameService {
     }
 
     func fetchPendingInviteCount(gameId: String) async throws -> Int {
-        let result: [GameInvite] = try await client
+        // Head-only count — no rows cross the wire. Previously this fetched
+        // every pending invite row in full just to `.count` the array.
+        let response = try await client
             .from("game_invites")
-            .select()
+            .select("id", head: true, count: .exact)
             .eq("game_id", value: gameId)
             .eq("status", value: InviteStatus.pending.rawValue)
             .execute()
-            .value
-        return result.count
+        return response.count ?? 0
     }
 
     func nextAvailableSeat(gameId: String) async throws -> Int {
