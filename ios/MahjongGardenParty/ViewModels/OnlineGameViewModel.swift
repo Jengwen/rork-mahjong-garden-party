@@ -8,6 +8,14 @@ class OnlineGameViewModel {
     var activeGames: [OnlineGameSummary] = []
     var pendingInvites: [GameInvite] = []
     var inviteSenderProfiles: [String: FriendProfile] = [:]
+    /// A still-live game (charleston/playing) this user is seated in and can drop
+    /// back into — surfaced as the Home "Resume Game" banner after an accidental
+    /// close (app killed/backgrounded/crashed). Nil when there's nothing to resume.
+    var resumableGame: OnlineGameSummary?
+    /// Local pointer to the game we're actively in, so a resume survives even when
+    /// the participant-row lookup is momentarily RLS-blocked or offline. Set when we
+    /// enter a live board; cleared on an intentional leave.
+    private static let resumeGameIdKey = "resume_online_game_id"
     var currentGameId: String?
     var currentGame: OnlineGame?
     var currentParticipants: [GameParticipant] = []
@@ -283,6 +291,53 @@ class OnlineGameViewModel {
     var mySeatIndex: Int? {
         guard let myId = myUserId else { return nil }
         return currentParticipants.first(where: { $0.userId == myId })?.seatIndex
+    }
+
+    // MARK: - Resume (rejoin after an accidental close)
+
+    /// Remember that we're actively in a live game, so it can be resumed after an
+    /// accidental close. Only games actually in play (charleston/playing) are
+    /// resumable — a `waiting` lobby uses the normal join flow.
+    private func rememberResumableGame() {
+        guard let gameId = currentGameId else { return }
+        let status = currentGame?.status
+        if status == OnlineGameStatus.charleston.rawValue
+            || status == OnlineGameStatus.playing.rawValue {
+            UserDefaults.standard.set(gameId, forKey: Self.resumeGameIdKey)
+        }
+    }
+
+    /// Forget the resume pointer. Called on an intentional leave / when a game ends.
+    private func clearResumableGame() {
+        UserDefaults.standard.removeObject(forKey: Self.resumeGameIdKey)
+        resumableGame = nil
+    }
+
+    /// Recompute `resumableGame` for the Home banner. Looks for a still-live game
+    /// this user is seated in, preferring the locally-remembered one. Safe to call
+    /// on every Home appearance; silently no-ops when signed out.
+    func refreshResumableGame() async {
+        guard SupabaseService.shared.isAuthenticated else {
+            resumableGame = nil
+            return
+        }
+        let summaries = (try? await service.fetchMyActiveGames()) ?? []
+        let live = summaries.filter {
+            $0.game.status == OnlineGameStatus.playing.rawValue
+                || $0.game.status == OnlineGameStatus.charleston.rawValue
+        }
+        let remembered = UserDefaults.standard.string(forKey: Self.resumeGameIdKey)
+        // Prefer the remembered game; otherwise the most recently updated live one
+        // (fetchMyActiveGames already sorts by updatedAt desc).
+        let candidate = live.first(where: { $0.id == remembered }) ?? live.first
+        resumableGame = candidate
+        // Keep the token consistent with reality: adopt the found game, or drop a
+        // stale token that no longer maps to a live game we're in.
+        if let candidate {
+            UserDefaults.standard.set(candidate.id, forKey: Self.resumeGameIdKey)
+        } else if remembered != nil {
+            UserDefaults.standard.removeObject(forKey: Self.resumeGameIdKey)
+        }
     }
 
     func loadActiveGames() async {
@@ -616,7 +671,12 @@ class OnlineGameViewModel {
             // invitees can transition even when RLS blocks them from reading `online_games`.
             await broadcastGameStarted(gameId: gameId, status: status, state: state, participants: currentParticipants)
             print("🚀 Host startOnlineGame: broadcast sent, flipping showGameBoard")
+            // Keep the local mirror's status current so `rememberResumableGame`
+            // sees a live game (it was still "waiting" from the lobby), then
+            // persist the resume pointer for the host too.
+            currentGame?.status = status
             showGameBoard = true
+            rememberResumableGame()
         } catch {
             print("❌ Host startOnlineGame failed: \(error)")
             errorMessage = error.localizedDescription
@@ -684,6 +744,11 @@ class OnlineGameViewModel {
             mergeSelfIntoParticipants()
             lastAppliedUpdatedAt = game.updatedAt ?? ""
             showGameBoard = true
+            // We're now in a live game — remember it so it can be resumed if this
+            // client closes unexpectedly. The banner we just tapped (if any) is
+            // stale now that we're back in; drop it.
+            rememberResumableGame()
+            resumableGame = nil
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -3407,6 +3472,9 @@ class OnlineGameViewModel {
         } catch {
             print("⚠️ leaveGame: \(error)")
         }
+        // Intentional leave — forget the resume pointer so no stale "Resume Game"
+        // banner points at a game we deliberately walked away from.
+        clearResumableGame()
         currentGameId = nil
         currentGame = nil
         currentParticipants = []
