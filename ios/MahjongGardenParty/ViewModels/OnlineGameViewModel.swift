@@ -2040,7 +2040,26 @@ class OnlineGameViewModel {
                         // Step 2: still stuck after a DB pull. Clear our stale local
                         // pending pass so the UI unfreezes from the "Tiles passed"
                         // screen, re-broadcast, and rebuild realtime as a backstop.
-                        if mySeat >= 0 {
+                        //
+                        // CRITICAL: put the passed tiles BACK IN THE HAND first.
+                        // `confirmCharlestonPass` physically removed them from the
+                        // hand into `charlestonPendingPasses[mySeat]` — nil-ing the
+                        // entry alone DESTROYS them. This clear was written assuming
+                        // the host's newer state would land moments later and replace
+                        // the hand, but in the exact scenario that triggers it (a
+                        // silently dead inbound channel) that state may never arrive:
+                        // the invitee was left 3 tiles short at "Select 3 tiles",
+                        // with no legal way forward. Restoring is safe — if/when the
+                        // host's authoritative post-exchange state finally lands,
+                        // restoreState overwrites the hand wholesale anyway. Dedup by
+                        // tile id in case a partial merge already returned some.
+                        if mySeat >= 0, mySeat < gameViewModel.players.count {
+                            if let pass = gameViewModel.charlestonPendingPasses[mySeat] {
+                                let handIds = Set(gameViewModel.players[mySeat].hand.map(\.id))
+                                let toRestore = pass.filter { !handIds.contains($0.id) }
+                                gameViewModel.players[mySeat].hand.append(contentsOf: toRestore)
+                                print("🩹 charleston invitee watchdog: restored \(toRestore.count) passed tile(s) to hand before clearing pending pass")
+                            }
                             gameViewModel.charlestonPendingPasses[mySeat] = nil
                         }
                         await self.broadcastStateSyncRequest(gameViewModel: gameViewModel)
