@@ -240,9 +240,13 @@ class SupabaseService {
     // MARK: - Leaderboard
 
     func fetchLeaderboard(limit: Int = 50) async throws -> [SupabaseLeaderboardEntry] {
+        // Reads go through the `public_player_profiles` view (public display
+        // columns only) — the base table is own-row-only under RLS so other
+        // players' private columns (email, settings) never leave the server.
+        // Explicit column list also stops shipping 50 rows of unneeded blobs.
         let response: [SupabaseLeaderboardEntry] = try await client
-            .from("player_profiles")
-            .select()
+            .from("public_player_profiles")
+            .select("user_id,display_name,avatar_image,level,total_wins,total_games")
             .order("total_wins", ascending: false)
             .limit(limit)
             .execute()
@@ -336,9 +340,11 @@ class SupabaseService {
     }
 
     func fetchFriendProfile(userId: String) async throws -> FriendProfile? {
+        // Other players' profiles come from the public view — base-table RLS
+        // is own-row-only, and the view carries no private columns.
         let response: [FriendProfile] = try await client
-            .from("player_profiles")
-            .select()
+            .from("public_player_profiles")
+            .select("user_id,display_name,avatar_image,level,total_wins,total_games")
             .eq("user_id", value: userId)
             .execute()
             .value
@@ -348,8 +354,8 @@ class SupabaseService {
     func searchPlayers(query: String) async throws -> [FriendProfile] {
         guard let userId = currentUserId else { return [] }
         let response: [FriendProfile] = try await client
-            .from("player_profiles")
-            .select()
+            .from("public_player_profiles")
+            .select("user_id,display_name,avatar_image,level,total_wins,total_games")
             .ilike("display_name", pattern: "%\(query)%")
             .neq("user_id", value: userId.uuidString.lowercased())
             .limit(20)
@@ -473,17 +479,23 @@ class SupabaseService {
 
     func fetchUnreadCounts() async throws -> [String: Int] {
         guard let userId = currentUserId else { return [:] }
+        // Only the sender_id column — this previously downloaded every unread
+        // message in full (including content) just to count per sender.
+        nonisolated struct SenderRow: Codable, Sendable {
+            let senderId: String
+            enum CodingKeys: String, CodingKey { case senderId = "sender_id" }
+        }
         do {
-            let messages: [DirectMessage] = try await client
+            let rows: [SenderRow] = try await client
                 .from("messages")
-                .select()
+                .select("sender_id")
                 .eq("receiver_id", value: userId.uuidString.lowercased())
                 .eq("is_read", value: false)
                 .execute()
                 .value
             var counts: [String: Int] = [:]
-            for msg in messages {
-                counts[msg.senderId, default: 0] += 1
+            for row in rows {
+                counts[row.senderId, default: 0] += 1
             }
             return counts
         } catch {
