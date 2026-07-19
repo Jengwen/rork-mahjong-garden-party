@@ -140,16 +140,25 @@ class OnlineGameViewModel {
     /// TINY liveness ping sent by the host's routine play-phase heartbeat instead
     /// of a full `state_update`. Real changes already propagate reliably through
     /// the immediate move broadcast + retry burst + durable `game_actions` insert
-    /// in `syncAfterMove` — this ping carries no game state at all. Its only job
-    /// is to keep an invitee's `lastStateUpdateAt` fresh during a quiet stretch
-    /// (e.g. the invitee is still deciding their move) so the staleness-escalation
-    /// tiers in `ensurePlayPhaseInviteePull` don't misfire a sync request, DB
-    /// pull, or — worst case — a disruptive realtime reconnect over nothing.
-    /// Replacing a ~6s full-state re-serialize/broadcast/merge with this avoids
-    /// paying that cost on every tick for the entire lifetime of a game.
+    /// in `syncAfterMove` — this ping carries no hands/wall/pile, just a few-byte
+    /// FINGERPRINT of the sender's position. The receiver freshens its
+    /// `lastStateUpdateAt` staleness clock ONLY when the fingerprint matches its
+    /// own state. That distinction is load-bearing: a first version with no
+    /// fingerprint freshened the clock unconditionally, which made a genuinely
+    /// desynced invitee look "fresh" forever — its DB-pull/reconnect recovery
+    /// tiers never fired, and its stale state lingered to be replayed into the
+    /// host (the "kong revealed then reversed" incident). A matching fingerprint
+    /// means in-sync (freshen, avoid pointless escalation); a mismatch means the
+    /// clock keeps aging so the existing recovery tiers fire and resync.
     nonisolated struct HeartbeatPingPayload: Codable, Sendable {
         let gameId: String
         let senderSeat: Int
+        // Fingerprint fields — optional so a ping from an older build (no
+        // fingerprint) is still decodable; those freshen unconditionally.
+        let discardCount: Int?
+        let currentTurn: Int?
+        let hasDrawn: Bool?
+        let status: String?
     }
 
     /// LIGHTWEIGHT CHARLESTON PASS BROADCAST. Carries only the minimum data the
@@ -902,13 +911,20 @@ class OnlineGameViewModel {
         }
     }
 
-    /// See `HeartbeatPingPayload`. Sends just `{gameId, senderSeat}` — no wall,
-    /// hands, discard pile, or anything else — so the routine play-phase
-    /// heartbeat tick doesn't pay full serialize/broadcast/decode/merge cost
-    /// when nothing has actually changed since the last real move.
-    private func broadcastHeartbeatPing(gameId: String, senderSeat: Int) async {
+    /// See `HeartbeatPingPayload`. Sends the sender's position fingerprint — no
+    /// wall, hands, or discard pile — so the routine play-phase heartbeat tick
+    /// doesn't pay full serialize/broadcast/decode/merge cost when nothing has
+    /// actually changed since the last real move.
+    private func broadcastHeartbeatPing(gameId: String, gameViewModel: GameViewModel) async {
         guard let channel = realtimeChannel else { return }
-        let payload = HeartbeatPingPayload(gameId: gameId, senderSeat: senderSeat)
+        let payload = HeartbeatPingPayload(
+            gameId: gameId,
+            senderSeat: gameViewModel.localSeatIndex,
+            discardCount: gameViewModel.discardCount,
+            currentTurn: gameViewModel.currentPlayerIndex,
+            hasDrawn: gameViewModel.hasDrawnThisTurn,
+            status: gameViewModel.gameStatus.rawValue
+        )
         do {
             try await channel.broadcast(event: "heartbeat_ping", message: payload)
         } catch {
@@ -1652,7 +1668,7 @@ class OnlineGameViewModel {
                 // burst + durable `game_actions` insert in `syncAfterMove` — this
                 // heartbeat's job is just to keep invitees' staleness clock fresh
                 // during quiet stretches, not to re-deliver state nothing needs.
-                await self.broadcastHeartbeatPing(gameId: gameId, senderSeat: gameViewModel.localSeatIndex)
+                await self.broadcastHeartbeatPing(gameId: gameId, gameViewModel: gameViewModel)
 
                 // Proactive self-heal: previously this whole check only ran when
                 // `applyRemoteState` fired in response to a fresh incoming update,
@@ -2670,8 +2686,33 @@ class OnlineGameViewModel {
         }
         // Ignore our own echo.
         if payload.senderSeat == gameViewModel.localSeatIndex { return }
-        lastStateUpdateSenderSeat = payload.senderSeat
-        lastStateUpdateAt = Date()
+
+        // Freshen the staleness clock ONLY when the sender's fingerprint matches
+        // our local position (see `HeartbeatPingPayload`). On a mismatch the
+        // clock keeps aging, so the recovery tiers (sync request → DB pull →
+        // reconnect) fire and pull the real state instead of the desync hiding
+        // behind fake freshness. A transient mismatch (the real move broadcast
+        // is a moment behind the ping) self-resolves: that broadcast freshens
+        // the clock itself when it lands, well inside the first tier's 3s.
+        let fingerprintMatches: Bool
+        if let discardCount = payload.discardCount,
+           let currentTurn = payload.currentTurn,
+           let hasDrawn = payload.hasDrawn,
+           let status = payload.status {
+            fingerprintMatches = discardCount == gameViewModel.discardCount
+                && currentTurn == gameViewModel.currentPlayerIndex
+                && hasDrawn == gameViewModel.hasDrawnThisTurn
+                && status == gameViewModel.gameStatus.rawValue
+        } else {
+            // Ping from an older build with no fingerprint — freshen as before.
+            fingerprintMatches = true
+        }
+        if fingerprintMatches {
+            lastStateUpdateSenderSeat = payload.senderSeat
+            lastStateUpdateAt = Date()
+        } else {
+            print("🫥 heartbeat ping fingerprint mismatch — sender turn=\(payload.currentTurn ?? -1) discards=\(payload.discardCount ?? -1) vs local turn=\(gameViewModel.currentPlayerIndex) discards=\(gameViewModel.discardCount); letting staleness accrue")
+        }
 
         // TERMINAL RE-ASSERT. The play-phase heartbeat loop only runs while the
         // sender is still `.playing`, so receiving a ping means that peer has NOT

@@ -3219,8 +3219,20 @@ class GameViewModel {
             // The tile-id test keeps this precise: we only drop the packet when the
             // sender still has the exact tile we just claimed sitting in their discard
             // pile, which can only mean their state predates our call.
+            //
+            // COUNT MUST BE >=, NOT >. After the caller's FOLLOW-UP DISCARD the net
+            // pile count returns to exactly what it was before the call (claimed
+            // tile removed, new discard appended) — so a stale pre-call packet
+            // arrives with an EQUAL count, and the equal-count guards below all key
+            // on "same last-discard id", which no longer matches once the follow-up
+            // discard exists. With `>` only, that packet sailed through everything:
+            // the exposure vanished, the claimed tile snapped back into the pile,
+            // and the turn reversed onto the original discarder — the "bot called a
+            // kong, it revealed, then disappeared and the game stuck" report. The
+            // tile-id test below stays the authority: an equal-count packet is only
+            // dropped when it still carries a tile we hold inside an exposure.
             if weArePlaying && incomingStatus == .playing
-                && state.discardPile.count > discardPile.count {
+                && state.discardPile.count >= discardPile.count {
                 let localDiscardIds = Set(discardPile.map { $0.id })
                 let extraInIncoming = Set(
                     state.discardPile.map { $0.id }.filter { !localDiscardIds.contains($0) }
@@ -3523,6 +3535,31 @@ class GameViewModel {
                 // entirely. The `tryFinalizeCallWindow` body still re-checks this guard
                 // as a belt-and-suspenders.
                 tryFinalizeCallWindow()
+            } else if isOnlineHost,
+                      let discarded = lastDiscardedTile,
+                      let discIdx = lastDiscardPlayerIndex,
+                      currentPlayerIndex == discIdx,
+                      lastProcessedDiscardId == discarded.id,
+                      callResponseDiscardId == nil,
+                      !hasDrawnThisTurn,
+                      !awaitingCall,
+                      !showCallTileSelection {
+                // PARKED-ON-DISCARDER WITH A CLOSED WINDOW. The turn pointer sits on
+                // the seat that produced the current last discard, the discard was
+                // already processed, and there is NO open call window at all —
+                // `callResponseDiscardId` is nil, so the finalize branch above and
+                // the force-finalize branch below (whose tryFinalizeCallWindow
+                // bails on a nil window) are both unreachable. This state never
+                // occurs legitimately: every path that closes a window advances the
+                // turn in the same synchronous stretch. It is the residue of a
+                // stale broadcast reversing an already-finalized call — the "kong
+                // revealed, then vanished, table stuck on the discarder" report.
+                // Nothing else can advance from here (the state says the discarder
+                // must draw AGAIN, corrupting turn order even if they oblige), so
+                // hand the turn to the next seat.
+                print("🛟 parked-on-discarder recovery — window closed, advancing past seat \(discIdx)")
+                lastFinalizedCallDiscardId = discarded.id
+                proceedWithTurn()
             } else if isOnlineHost,
                       let discarded = lastDiscardedTile,
                       let discIdx = lastDiscardPlayerIndex,
