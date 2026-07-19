@@ -9,6 +9,7 @@ struct GameBoardView: View {
     @Environment(ThemeManager.self) private var themeManager
     @Environment(OnlineGameViewModel.self) private var onlineVM
     @State private var showMenu: Bool = false
+    @State private var showLeaveConfirm: Bool = false
     @State private var activeSheet: GameBoardSheet?
     // Suggested Hands uses fullScreenCover (not .sheet) because the game board
     // locks landscape on iPhone (compact vertical size class) where SwiftUI
@@ -52,7 +53,21 @@ struct GameBoardView: View {
         .confirmationDialog("Game Menu", isPresented: $showMenu) {
             Button("Resume") {}
             Button("Diagnostics") { activeSheet = .diagnostics }
+            // Route through a confirm step instead of leaving immediately, so an
+            // accidental tap doesn't forfeit the seat (and, for a host, end the
+            // game for everyone). A transient close — backgrounding, swiping the
+            // app away — never routes here, so it's safe to rejoin from Home.
+            Button("Leave Game", role: .destructive) { showLeaveConfirm = true }
+        }
+        .confirmationDialog(
+            "Leave this game?",
+            isPresented: $showLeaveConfirm,
+            titleVisibility: .visible
+        ) {
             Button("Leave Game", role: .destructive) { performExit() }
+            Button("Keep Playing", role: .cancel) {}
+        } message: {
+            Text(leaveConfirmMessage)
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -219,7 +234,16 @@ struct GameBoardView: View {
             .font(isIPad ? .caption : .caption2)
             .foregroundStyle(.secondary)
 
-            Button { performExit() } label: {
+            Button {
+                // Mid-game close button: confirm before forfeiting the seat. The
+                // end-game overlay's own "Return to Lobby" exits directly (game's
+                // already over), so gate only while the game is still live.
+                if gameViewModel.isOnlineMode && gameViewModel.gameStatus != .completed {
+                    showLeaveConfirm = true
+                } else {
+                    performExit()
+                }
+            } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(isIPad ? .body : .subheadline)
                     .foregroundStyle(.secondary)
@@ -889,6 +913,16 @@ struct GameBoardView: View {
                     .clipShape(.rect(cornerRadius: 14))
             }
         }
+    }
+
+    private var leaveConfirmMessage: String {
+        guard gameViewModel.isOnlineMode else {
+            return "Your current game will end."
+        }
+        if onlineVM.isHost && gameViewModel.gameStatus != .completed {
+            return "You're the host — leaving ends the game for everyone. If you just want a break, close the app instead and rejoin from Home."
+        }
+        return "You can rejoin anytime from the “Game in progress” banner on Home. Leaving gives up your seat for good."
     }
 
     /// Cleanly tears down the active game and dismisses the board. For online games

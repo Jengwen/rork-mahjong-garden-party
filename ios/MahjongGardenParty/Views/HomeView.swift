@@ -4,11 +4,13 @@ struct HomeView: View {
     @Environment(AppViewModel.self) private var appViewModel
     @Environment(ThemeManager.self) private var themeManager
     @Environment(GameViewModel.self) private var gameViewModel
+    @Environment(\.scenePhase) private var scenePhase
     @Binding var selectedTab: AppTab
     @State private var showDailyReward: Bool = false
     @State private var appeared: Bool = false
     @State private var showGameBoard: Bool = false
     @State private var showPaywall: Bool = false
+    @State private var isResuming: Bool = false
     @State private var store = StoreManager.shared
     @State private var onlineVM = OnlineGameViewModel()
 
@@ -17,6 +19,9 @@ struct HomeView: View {
             ScrollView {
                 VStack(spacing: 24) {
                     welcomeHeader
+                    if onlineVM.resumableGame != nil {
+                        resumeGameBanner
+                    }
                     dailyRewardBanner
                     quickPlaySection
                     learningResourcesButton
@@ -65,6 +70,100 @@ struct HomeView: View {
                 withAnimation(.spring(response: 0.6)) {
                     appeared = true
                 }
+            }
+            .task {
+                await onlineVM.refreshResumableGame()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // Re-check when the app returns to the foreground — the most common
+                // moment right after an accidental close/relaunch.
+                if phase == .active {
+                    Task { await onlineVM.refreshResumableGame() }
+                }
+            }
+            .onChange(of: showGameBoard) { _, isShowing in
+                // Coming back from the board — recompute so the banner reflects
+                // whether the game is still live (or was left/finished).
+                if !isShowing {
+                    Task { await onlineVM.refreshResumableGame() }
+                }
+            }
+        }
+    }
+
+    private var resumeGameBanner: some View {
+        Button {
+            resumeGame()
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(themeManager.currentTheme.primary.opacity(0.15))
+                        .frame(width: 44, height: 44)
+                    if isResuming {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "gamecontroller.fill")
+                            .font(.title3)
+                            .foregroundStyle(themeManager.currentTheme.primary)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Game in progress")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(isResuming ? "Rejoining…" : "Tap to rejoin your table")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(themeManager.currentTheme.primary)
+            }
+            .padding(14)
+            .background(
+                LinearGradient(
+                    colors: [
+                        themeManager.currentTheme.primary.opacity(0.12),
+                        themeManager.currentTheme.accent.opacity(0.10)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .clipShape(.rect(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(themeManager.currentTheme.primary.opacity(0.35), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isResuming)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 20)
+        .animation(.spring(response: 0.6).delay(0.05), value: appeared)
+    }
+
+    private func resumeGame() {
+        guard let summary = onlineVM.resumableGame, !isResuming else { return }
+        isResuming = true
+        Task {
+            let ok = await onlineVM.loadOnlineGameState(gameId: summary.id, gameViewModel: gameViewModel)
+            isResuming = false
+            if ok {
+                // loadOnlineGameState flips onlineVM.showGameBoard; this view drives
+                // its own cover, so hand off and clear the VM flag (same pattern as
+                // OnlineGamesView) to avoid a lingering cross-view present signal.
+                onlineVM.showGameBoard = false
+                showGameBoard = true
+            } else {
+                // Couldn't load it (finished, left, or transient) — recompute so a
+                // dead banner disappears instead of bouncing the user nowhere.
+                await onlineVM.refreshResumableGame()
             }
         }
     }
