@@ -8,7 +8,7 @@ workflows:
     environment:
       ios_signing:
         distribution_type: app_store
-        bundle_identifier: com.yourdomain.mahjonggardenparty  # <-- set this to your NEW bundle ID once you change it in Xcode
+        bundle_identifier: com.mahjonggardenparty
       vars:
         XCODE_PROJECT: "ios/MahjongGardenParty.xcodeproj"
         XCODE_SCHEME: "MahjongGardenParty"
