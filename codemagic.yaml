@@ -12,6 +12,7 @@ workflows:
       vars:
         XCODE_PROJECT: "ios/MahjongGardenParty.xcodeproj"
         XCODE_SCHEME: "MahjongGardenParty"
+        APP_STORE_APPLE_ID: 6793677304
       xcode: latest
     triggering:
       events:
@@ -21,10 +22,6 @@ workflows:
           include: true
           source: true
     scripts:
-      - name: Set up code signing
-        script: |
-          xcode-project use-profiles
-
       - name: Resolve Swift Package dependencies
         script: |
           xcodebuild -resolvePackageDependencies \
