@@ -5,8 +5,8 @@ import StoreKit
 final class StoreManager {
     static let shared = StoreManager()
 
-    static let monthlyID = "mgp_monthly"
-    static let annualID = "mgp_annual"
+    static let monthlyID = "mgg_monthly"
+    static let annualID = "mgg_annual"
     static let allProductIDs: [String] = [monthlyID, annualID]
 
     var products: [Product] = []
