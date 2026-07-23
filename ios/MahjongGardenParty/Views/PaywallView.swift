@@ -257,7 +257,7 @@ struct PaywallView: View {
             HStack(spacing: 16) {
                 Link("Terms of Service", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
                 Link("EULA", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
-                Link("Privacy Policy", destination: URL(string: "https://www.apple.com/legal/privacy/")!)
+                Link("Privacy Policy", destination: URL(string: "https://mahjonggardenparty.com/privacy.html")!)
             }
             .font(.caption2)
         }
