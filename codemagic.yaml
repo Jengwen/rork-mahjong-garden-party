@@ -37,9 +37,13 @@ workflows:
 
       - name: Build ipa for distribution
         script: |
+          # Ask App Store Connect for the highest build number already uploaded, then add 1.
+          BUILD_NUM=$(($(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID") + 1))
+          echo "Building with CFBundleVersion $BUILD_NUM"
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
-            --scheme "$XCODE_SCHEME"
+            --scheme "$XCODE_SCHEME" \
+            --archive-xcargs "COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGN_STYLE=Manual CURRENT_PROJECT_VERSION=$BUILD_NUM"
 
     artifacts:
       - build/ios/ipa/*.ipa
