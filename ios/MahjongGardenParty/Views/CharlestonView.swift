@@ -13,6 +13,7 @@ struct CharlestonView: View {
     @State private var draggedFromIndex: Int?
     @State private var showDiagnostics: Bool = false
     @State private var showExitConfirm: Bool = false
+    @State private var showWaitingExitConfirm: Bool = false
 
     /// Measured at layout time so sizing follows the space we actually have,
     /// rather than a coarse "is it an iPad" guess. Seeded with a standard iPhone
@@ -521,6 +522,36 @@ struct CharlestonView: View {
             if gameViewModel.isOnlineMode {
                 playerSubmissionStatus
                     .padding(.top, isIPad ? 8 : 4)
+            }
+
+            // Escape hatch: the waiting screen replaces the header (and its exit
+            // control), so without this button a player stuck waiting has no way
+            // to leave. The confirmation dialog is attached HERE, not to the
+            // header, because the header isn't in the view hierarchy while this
+            // section is showing — a dialog anchored to an absent view never
+            // presents.
+            Button {
+                showWaitingExitConfirm = true
+            } label: {
+                Text(gameViewModel.isOnlineMode ? "Leave Game" : "Exit to Lobby")
+                    .font(isIPad ? .footnote : .caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, isIPad ? 10 : 6)
+            .confirmationDialog("Leave the game?", isPresented: $showWaitingExitConfirm, titleVisibility: .visible) {
+                Button(gameViewModel.isOnlineMode ? "Leave Game" : "Exit to Lobby", role: .destructive) {
+                    Task {
+                        if gameViewModel.isOnlineMode {
+                            await onlineVM.leaveGame()
+                        }
+                        dismiss()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(gameViewModel.isOnlineMode
+                     ? "Leaving will end the Charleston for you and return you to the lobby."
+                     : "Your current game progress will be lost.")
             }
         }
         .padding((isIPad ? 32 : 24) * L.scale)
