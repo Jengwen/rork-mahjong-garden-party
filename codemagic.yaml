@@ -37,13 +37,31 @@ workflows:
 
       - name: Build ipa for distribution
         script: |
-          # Ask App Store Connect for the highest build number already uploaded, then add 1.
-          BUILD_NUM=$(($(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID") + 1))
-          echo "Building with CFBundleVersion $BUILD_NUM"
+          # 1. Get the highest build number already on TestFlight for this app.
+          #    (Not the App Store number — the app hasn't been released there,
+          #    so that query returns a stale value.)
+          LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || echo "")
+          if [ -z "$LATEST" ]; then
+            # Fallback: epoch seconds are always increasing and unique.
+            BUILD_NUM=$(date +%s)
+          else
+            BUILD_NUM=$((LATEST + 1))
+          fi
+          echo "Latest on TestFlight: '$LATEST' -> building CFBundleVersion $BUILD_NUM"
+
+          # 2. Write the number straight into the project file so it always
+          #    takes effect (archive-xcargs overrides are unreliable with
+          #    GENERATE_INFOPLIST_FILE = YES).
+          sed -i '' "s/CURRENT_PROJECT_VERSION = [0-9]*;/CURRENT_PROJECT_VERSION = $BUILD_NUM;/g" \
+            "$XCODE_PROJECT/project.pbxproj"
+          echo "Confirming the change stuck:"
+          grep -m1 "CURRENT_PROJECT_VERSION" "$XCODE_PROJECT/project.pbxproj"
+
+          # 3. Archive & export.
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME" \
-            --archive-xcargs "COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGN_STYLE=Manual CURRENT_PROJECT_VERSION=$BUILD_NUM"
+            --archive-xcargs "COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGN_STYLE=Manual"
 
     artifacts:
       - build/ios/ipa/*.ipa
