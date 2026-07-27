@@ -14,6 +14,9 @@ class AppViewModel {
     var syncError: String?
     var passwordResetSent: Bool = false
     var passwordResetError: String?
+    /// Set true when the app is opened via a password-reset deep link,
+    /// which presents the "set new password" screen over everything.
+    var showSetNewPassword: Bool = false
     weak var settingsManagerRef: SettingsManager?
 
     private let supabase = SupabaseService.shared
