@@ -138,73 +138,29 @@ Deno.serve(async (req) => {
     );
   }
 
-  // ---- read current row ----
-  const { data: row, error: rowErr } = await admin
-    .from("online_games")
-    .select("status, game_data")
-    .eq("id", gameId)
-    .maybeSingle();
-  if (rowErr || !row) {
+  // ---- atomic, phase-guarded merge (single UPDATE under the row lock) ----
+  // The previous read-modify-write here could race the host's phase advance and
+  // write a stale full-row snapshot back, reverting the game to the prior phase.
+  // submit_charleston_pass_atomic only touches this seat's pending entry and
+  // hand, and its phase check is in the same statement as the write, so a late
+  // submission no-ops instead of reverting the row.
+  const { data: rpcResult, error: rpcErr } = await admin.rpc(
+    "submit_charleston_pass_atomic",
+    {
+      p_game_id: gameId,
+      p_seat: seat,
+      p_phase: phase,
+      p_tiles: tiles,
+      p_hand_after: handAfter,
+    },
+  );
+  if (rpcErr) {
     return jsonResponse(
-      { error: "Game not found", details: rowErr?.message ?? null },
-      404,
-    );
-  }
-
-  const status: string = row.status;
-  const gameData: any = row.game_data ?? null;
-  if (!gameData) {
-    return jsonResponse(
-      { ok: true, skipped: "no_game_data" },
-      200,
-    );
-  }
-
-  // Only merge while the row is still in the same Charleston phase.
-  if (status !== "charleston") {
-    return jsonResponse({ ok: true, skipped: "not_charleston", status }, 200);
-  }
-  const rowPhase: number = typeof gameData.charlestonPhase === "number"
-    ? gameData.charlestonPhase
-    : -1;
-  if (rowPhase !== phase) {
-    return jsonResponse(
-      { ok: true, skipped: "phase_mismatch", rowPhase, phase },
-      200,
-    );
-  }
-
-  // ---- merge pass ----
-  const pending: Record<string, unknown> =
-    (gameData.charlestonPendingPasses && typeof gameData.charlestonPendingPasses === "object")
-      ? { ...gameData.charlestonPendingPasses }
-      : {};
-  pending[String(seat)] = tiles;
-  gameData.charlestonPendingPasses = pending;
-
-  // Mirror hand-after onto the seat so post-exchange math stays consistent
-  // with what the seat actually has client-side.
-  if (Array.isArray(gameData.players) && gameData.players[seat]) {
-    gameData.players[seat] = { ...gameData.players[seat], hand: handAfter };
-  }
-
-  // ---- write back ----
-  const nowIso = new Date().toISOString();
-  const { error: updErr } = await admin
-    .from("online_games")
-    .update({ game_data: gameData, updated_at: nowIso })
-    .eq("id", gameId);
-  if (updErr) {
-    return jsonResponse(
-      { error: "Failed to write game state", details: updErr.message },
+      { error: "Failed to merge pass", details: rpcErr.message },
       500,
     );
   }
 
-  return jsonResponse({
-    ok: true,
-    seat,
-    phase,
-    pending: Object.keys(pending).map((k) => Number(k)).sort(),
-  });
+  return jsonResponse(rpcResult ?? { ok: true, seat, phase });
+
 });
