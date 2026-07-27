@@ -10,6 +10,7 @@ struct MahjongGardenPartyApp: App {
 
     var body: some Scene {
         WindowGroup {
+            @Bindable var appViewModel = appViewModel
             ContentView()
                 .environment(appViewModel)
                 .environment(themeManager)
@@ -21,6 +22,25 @@ struct MahjongGardenPartyApp: App {
                         guard let appViewModel else { return }
                         appViewModel.syncSettingsFromManager(settingsManager)
                     }
+                }
+                .onOpenURL { url in
+                    // Password-reset links open the app at mahjonggardenparty://reset-callback
+                    guard url.scheme == "mahjonggardenparty",
+                          url.host == "reset-callback" else { return }
+                    Task {
+                        do {
+                            try await SupabaseService.shared.handlePasswordResetURL(url)
+                            appViewModel.showSetNewPassword = true
+                        } catch {
+                            appViewModel.passwordResetError = error.localizedDescription
+                        }
+                    }
+                }
+                .fullScreenCover(isPresented: $appViewModel.showSetNewPassword) {
+                    ResetPasswordView {
+                        appViewModel.showSetNewPassword = false
+                    }
+                    .environment(themeManager)
                 }
         }
     }

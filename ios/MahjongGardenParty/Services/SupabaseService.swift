@@ -87,7 +87,23 @@ class SupabaseService {
     }
 
     func resetPassword(for email: String) async throws {
-        try await client.auth.resetPasswordForEmail(email)
+        // redirectTo must exactly match a Redirect URL allow-listed in
+        // Supabase dashboard > Authentication > URL Configuration.
+        try await client.auth.resetPasswordForEmail(
+            email,
+            redirectTo: URL(string: "mahjonggardenparty://reset-callback")
+        )
+    }
+
+    /// Called when the app is opened via the password-reset email link.
+    /// Establishes the recovery session from the URL so updatePassword can run.
+    func handlePasswordResetURL(_ url: URL) async throws {
+        try await client.auth.session(from: url)
+    }
+
+    /// Sets a new password for the user in the current (recovery) session.
+    func updatePassword(_ newPassword: String) async throws {
+        try await client.auth.update(user: UserAttributes(password: newPassword))
     }
 
     // MARK: - Player Profiles
