@@ -11,6 +11,8 @@ struct HomeView: View {
     @State private var showGameBoard: Bool = false
     @State private var showPaywall: Bool = false
     @State private var isResuming: Bool = false
+    @State private var isAbandoning: Bool = false
+    @State private var showAbandonConfirm: Bool = false
     @State private var store = StoreManager.shared
     @State private var onlineVM = OnlineGameViewModel()
 
@@ -123,6 +125,19 @@ struct HomeView: View {
                 Image(systemName: "chevron.right")
                     .font(.subheadline.bold())
                     .foregroundStyle(themeManager.currentTheme.primary)
+
+                // Close/abandon control. Separate tap target from the resume
+                // action; confirmation guards against mis-taps because
+                // abandoning a hosted live game ends it for the whole table.
+                Button {
+                    showAbandonConfirm = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .disabled(isResuming || isAbandoning)
             }
             .padding(14)
             .background(
@@ -143,9 +158,26 @@ struct HomeView: View {
         }
         .buttonStyle(.plain)
         .disabled(isResuming)
+        .confirmationDialog("End this game?", isPresented: $showAbandonConfirm, titleVisibility: .visible) {
+            Button("End Game", role: .destructive) {
+                abandonGame()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the game from your home screen. If you're the host, it ends the game for everyone at the table.")
+        }
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 20)
         .animation(.spring(response: 0.6).delay(0.05), value: appeared)
+    }
+
+    private func abandonGame() {
+        guard !isAbandoning else { return }
+        isAbandoning = true
+        Task {
+            await onlineVM.abandonResumableGame()
+            isAbandoning = false
+        }
     }
 
     private func resumeGame() {

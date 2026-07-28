@@ -313,6 +313,38 @@ class OnlineGameViewModel {
         resumableGame = nil
     }
 
+    /// Abandon the game shown in the Home "Game in progress" banner WITHOUT
+    /// loading into it. Mirrors `leaveGame()`'s semantics from outside a live
+    /// session: if we're the host of a live game, mark it completed first so
+    /// the table isn't stranded (the host drives bots and call finalization —
+    /// a host-less "playing" row is a dead board for everyone else), then
+    /// remove our participant row and drop the resume pointer.
+    func abandonResumableGame() async {
+        guard let summary = resumableGame else { return }
+        let gameId = summary.id
+        let iAmHost = summary.game.hostId == summary.myUserId
+        let isLive = summary.game.status != OnlineGameStatus.completed.rawValue
+            && summary.game.status != OnlineGameStatus.waiting.rawValue
+
+        if iAmHost && isLive {
+            do {
+                try await service.markGameCompleted(gameId: gameId)
+                print("🏁 abandoned own hosted game from Home — marked completed so no one is stranded")
+            } catch {
+                print("⚠️ abandonResumableGame: failed to mark game completed: \(error)")
+            }
+        }
+        do {
+            try await service.leaveGame(gameId: gameId)
+        } catch {
+            print("⚠️ abandonResumableGame: \(error)")
+        }
+        clearResumableGame()
+        // Recompute in case ANOTHER live game exists behind the one we dropped —
+        // the banner should show it rather than vanish and reappear on next launch.
+        await refreshResumableGame()
+    }
+
     /// Recompute `resumableGame` for the Home banner. Looks for a still-live game
     /// this user is seated in, preferring the locally-remembered one. Safe to call
     /// on every Home appearance; silently no-ops when signed out.

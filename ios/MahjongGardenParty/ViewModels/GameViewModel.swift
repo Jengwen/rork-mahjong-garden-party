@@ -1382,11 +1382,13 @@ class GameViewModel {
 
         // If we had pre-claimed the call window in beginCallTileSelection, release
         // it so the host can finalize normally. We treat this as a skip from our
-        // seat unless we've already exposed.
+        // seat unless we've already exposed. Deliberately NOT conditioned on
+        // callResponseDiscardId matching — that field rides in broadcast state and
+        // a heartbeat merge can perturb it between our tap and this cancel, which
+        // previously left our "called" stuck in place and froze the table.
         if isOnlineMode,
-           let discarded = lastDiscardedTile,
+           lastDiscardedTile != nil,
            let playerIdx = humanPlayerIndex,
-           callResponseDiscardId == discarded.id,
            callResponses[playerIdx] == "called" {
             callResponses[playerIdx] = "skip"
             notifyOnlineSync()
@@ -3308,6 +3310,16 @@ class GameViewModel {
         // our submission if a concurrent write from another player arrives without it.
         let mySeat = localSeatIndex
         let priorMyPass: [MahjongTile]? = isOnlineMode ? charlestonPendingPasses[mySeat] : nil
+        // OWN CALL RESPONSE IS AUTHORITATIVE. `callResponses` rides inside every
+        // heartbeat, and restoreState overwrites the whole map. When this seat
+        // cancels a call ("called" → "skip"), the host's ~1s heartbeat still
+        // carrying "called" would immediately re-apply the stale response to our
+        // own seat — our next heartbeat then re-affirms the cancelled call back
+        // to the host, and the table waits forever for an exposure that will
+        // never come. Snapshot our own entry (and the discard it answered) so we
+        // can re-assert it after the merge, exactly like priorMyPass above.
+        let priorMyCallResponse: String? = isOnlineMode ? callResponses[mySeat] : nil
+        let priorCallDiscardId: UUID? = isOnlineMode ? lastDiscardedTile?.id : nil
         let priorMyHand: [MahjongTile]? = (isOnlineMode && mySeat < players.count) ? players[mySeat].hand : nil
         let priorPhase = charlestonPhase
         let priorStatus = gameStatus
@@ -3374,6 +3386,26 @@ class GameViewModel {
            showCourtesyOptions {
             print("⏪ ignoring stale courtesy broadcast — would reopen chooser after East already chose")
             showCourtesyOptions = false
+        }
+
+        // Re-assert this seat's own call response if a stale broadcast for the
+        // SAME discard tried to roll it back. One-directional on purpose: a seat
+        // may downgrade its own "called" to "skip" (cancel), and that downgrade
+        // must survive merges — but we never resurrect a "called" the incoming
+        // state lacks (the exposure path handles genuine calls). Without this,
+        // cancelling a call freezes the table: see the seat-1-cancel incident.
+        if isOnlineMode,
+           gameStatus == .playing,
+           let prior = priorMyCallResponse,
+           prior == "skip",
+           priorCallDiscardId != nil,
+           lastDiscardedTile?.id == priorCallDiscardId,
+           callResponses[mySeat] == "called" {
+            print("🛡️ preserving own cancelled call response (skip) for discard \(String(describing: priorCallDiscardId)) across remote merge")
+            callResponses[mySeat] = "skip"
+            // Re-push so the host absorbs the downgrade instead of waiting on a
+            // caller follow-through that will never come.
+            if !isOnlineHost { onlineSyncHandler?() }
         }
 
         // Re-apply local tile selection if we're still in the same Charleston phase,
