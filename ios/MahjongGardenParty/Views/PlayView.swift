@@ -170,13 +170,13 @@ struct PlayView: View {
                 modeInfoCard(
                     title: "Solo Practice",
                     description: "Sharpen your skills against AI opponents. Perfect for learning American Mahjong rules and trying new strategies.",
-                    features: ["Adjustable difficulty", "No time pressure", "Learn at your pace"]
+                    features: ["No time pressure", "Learn at your pace"]
                 )
             case .multiplayer:
                 modeInfoCard(
                     title: "Live Multiplayer",
-                    description: "Play real-time Mahjong with 3 other players. Match with friends or find new garden companions.",
-                    features: ["Real-time gameplay", "In-game chat", "Ranked matches"]
+                    description: "Play real-time Mahjong with 3 other players.",
+                    features: ["Real-time gameplay"]
                 )
             case .async:
                 modeInfoCard(
