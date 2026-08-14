@@ -5,6 +5,7 @@ import SwiftUI
 /// so submitting simply updates the password on the current user.
 struct ResetPasswordView: View {
     @Environment(ThemeManager.self) private var themeManager
+    @Environment(AppViewModel.self) private var appViewModel
 
     @State private var newPassword: String = ""
     @State private var confirmPassword: String = ""
@@ -30,6 +31,7 @@ struct ResetPasswordView: View {
                     headerSection
                     formSection
                     actionButton
+                    preparingHint
                     cancelButton
                 }
                 .padding(.horizontal, 24)
@@ -109,8 +111,20 @@ struct ResetPasswordView: View {
             .foregroundStyle(.white)
             .clipShape(.rect(cornerRadius: 14))
         }
-        .disabled(isLoading || !passwordsValid)
-        .opacity(isLoading || !passwordsValid ? 0.6 : 1)
+        .disabled(isLoading || !passwordsValid || !appViewModel.recoverySessionReady)
+        .opacity(isLoading || !passwordsValid || !appViewModel.recoverySessionReady ? 0.6 : 1)
+    }
+
+    @ViewBuilder
+    private var preparingHint: some View {
+        if !appViewModel.recoverySessionReady {
+            HStack(spacing: 6) {
+                ProgressView().scaleEffect(0.8)
+                Text("Verifying your reset link…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var cancelButton: some View {
