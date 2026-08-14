@@ -87,6 +87,18 @@ class GameViewModel {
     var charlestonComplete: Bool = false
     var charlestonPendingPasses: [Int: [MahjongTile]] = [:]
 
+    /// Phase-keyed latch for THIS seat's own submitted Charleston pass in online play.
+    /// An invitee doesn't advance its own phase on submit — it waits for the host —
+    /// so the phase anti-regression guard (incomingPhase < localPhase, strict) can't
+    /// protect its pass: an equal-phase heartbeat that crossed wires with the submit
+    /// and lacks this seat's entry sails through and wipes it, bouncing the player
+    /// back to the tile-selection screen and freezing the table on the last unsubmitted
+    /// seat. This latch survives restoreState and is re-injected whenever the incoming
+    /// state is still on the latched phase but dropped our entry. It's cleared only when
+    /// the phase actually advances (the host finalized) or the Charleston ends.
+    /// Keyed by charlestonPhase.rawValue so a genuine new phase never re-injects a stale pass.
+    private var selfSubmittedPassLatch: (phase: Int, tiles: [MahjongTile])? = nil
+
     var hasSubmittedCharlestonPass: Bool {
         guard let idx = humanPlayerIndex else { return false }
         if isOnlineMode { return charlestonPendingPasses[idx] != nil }
@@ -659,6 +671,11 @@ class GameViewModel {
             }
             charlestonPendingPasses[playerIdx] = passed
             charlestonSelectedIndices = []
+            // Latch our own submission keyed by the current phase so an equal-phase
+            // stale heartbeat can't silently wipe it and bounce us back to the picker.
+            if !charlestonPhase.isCourtesy {
+                selfSubmittedPassLatch = (phase: charlestonPhase.rawValue, tiles: passed)
+            }
             if charlestonPhase.isCourtesy && courtesyTileCount > 0 {
                 advanceCourtesyTurn()
                 updateCourtesyMessage()
@@ -3442,6 +3459,38 @@ class GameViewModel {
                 players[mySeat].hand = myHand
             }
             inviteeShouldRepushPass = !isOnlineHost
+        }
+
+        // LATCH BACKSTOP. The priorMyPass re-assert above only works while our pass
+        // is still in charlestonPendingPasses at the start of THIS merge. Once a stale
+        // tick has already wiped it, priorMyPass is nil on every subsequent tick and
+        // the pass is gone for good — the reported "seat passed, bounced back to the
+        // picker, table frozen on this seat" freeze. The latch survives across ticks:
+        // if we're still on the phase we latched, and the merged state lacks our entry,
+        // restore it from the latch and re-push so the host actually collects it.
+        if isOnlineMode,
+           gameStatus == .charleston,
+           !charlestonPhase.isCourtesy,
+           let latch = selfSubmittedPassLatch,
+           latch.phase == charlestonPhase.rawValue,
+           mySeat >= 0,
+           mySeat < players.count,
+           charlestonPendingPasses[mySeat] == nil {
+            print("🔒 re-injecting latched self pass for seat \(mySeat) phase \(latch.phase) — stale heartbeat had dropped it")
+            charlestonPendingPasses[mySeat] = latch.tiles
+            // Make sure our hand doesn't still contain the latched tiles (a stale
+            // snapshot can restore the pre-pass hand); strip them so counts stay right.
+            let latchedIds = Set(latch.tiles.map { $0.id })
+            players[mySeat].hand.removeAll { latchedIds.contains($0.id) }
+            if !isOnlineHost { inviteeShouldRepushPass = true }
+        }
+
+        // Release the latch once the phase has genuinely advanced past the one we
+        // latched (host finalized and broadcast the next phase), or the Charleston
+        // is over — so a legitimately new phase is never blocked by a stale pass.
+        if let latch = selfSubmittedPassLatch,
+           gameStatus != .charleston || charlestonPhase.rawValue != latch.phase {
+            selfSubmittedPassLatch = nil
         }
 
         // COURTESY-TURN STABILIZATION. The host's heartbeat broadcasts a stale
