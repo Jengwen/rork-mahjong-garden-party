@@ -17,6 +17,10 @@ class AppViewModel {
     /// Set true when the app is opened via a password-reset deep link,
     /// which presents the "set new password" screen over everything.
     var showSetNewPassword: Bool = false
+    /// True once the recovery session from the reset link is established, so the
+    /// reset screen knows it can submit. The screen shows immediately on link
+    /// open; this gates the actual password update until the session exists.
+    var recoverySessionReady: Bool = false
     weak var settingsManagerRef: SettingsManager?
 
     private let supabase = SupabaseService.shared
