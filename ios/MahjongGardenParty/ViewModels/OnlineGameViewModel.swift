@@ -1180,6 +1180,7 @@ class OnlineGameViewModel {
         // race that would let another client clobber our seat's entry can
         // never occur. This is the single most reliable recovery path —
         // independent of realtime broadcast delivery and per-client RLS.
+        var edgeSubmitSucceeded = false
         if let myPass = gameViewModel.charlestonPendingPasses[mySeat] {
             do {
                 try await service.submitCharlestonPassViaEdge(
@@ -1189,10 +1190,35 @@ class OnlineGameViewModel {
                     tiles: myPass,
                     handAfter: gameViewModel.players[mySeat].hand
                 )
+                edgeSubmitSucceeded = true
                 print("\u{1F310} submit-charleston-pass edge OK seat=\(mySeat) phase=\(gameViewModel.charlestonPhase.rawValue)")
             } catch {
                 print("\u{26A0}\u{FE0F} submit-charleston-pass edge failed (non-fatal): \(error)")
             }
+        }
+
+        // FAST EXIT. When the atomic edge RPC succeeded, our pass is already merged
+        // server-side in a phase-guarded, race-free way — the single source of truth.
+        // The legacy fetch-modify-write block below was the pre-RPC recovery path;
+        // running it AFTER a successful RPC just issues a redundant full-row write
+        // that can cross wires with the host and other seats, re-introducing the
+        // stale snapshots that the slow 3s heartbeat then has to unwind. That churn
+        // is the "major delays / stuck on 2nd pass left" symptom. Skip it. We already
+        // fired the immediate broadcasts above for a fast host-side pickup; also fire
+        // the durable game-action wake-up (RLS-proof) before exiting, then let the
+        // pass heartbeat cover the rare case where every realtime path is dropping.
+        if edgeSubmitSucceeded {
+            Task { [weak self] in
+                guard let self else { return }
+                try? await self.service.insertGameAction(
+                    gameId: gameId,
+                    seat: mySeat,
+                    kind: "charleston_state",
+                    discardCount: 0,
+                    currentTurn: gameViewModel.currentPlayerIndex
+                )
+            }
+            return
         }
 
         // Start from the server snapshot when we can read it; fall back to our own
