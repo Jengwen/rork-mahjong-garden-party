@@ -259,6 +259,47 @@ async function sendApns(
   return result;
 }
 
+// ---- Rate limiting -------------------------------------------------------
+//
+// Per-user sliding-window limiter to stop an authenticated client from
+// push-spamming invites (harassment vector: each accepted call fires a real
+// APNs alert to the target). Kept in-memory on purpose: no schema dependency,
+// no extra DB round-trip on the hot path, and it can't fail-closed on a DB
+// hiccup. Caveat — Edge Function instances are ephemeral and may be more than
+// one, so this is per-instance, not globally exact. That's enough to blunt a
+// single abusive client; a determined distributed attack would need a shared
+// store (e.g. a rate_limits table or Redis), which is overkill for launch.
+const RATE_LIMIT_MAX = 10;                     // invites allowed per window
+const RATE_LIMIT_WINDOW_MS = 60_000;           // per rolling 60 seconds
+// callerId -> ascending list of send timestamps (ms) within the window.
+const inviteTimestamps = new Map<string, number[]>();
+
+// Returns null if allowed; otherwise the seconds until the caller may retry.
+function rateLimitRetryAfter(callerId: string): number | null {
+  const now = Date.now();
+  const cutoff = now - RATE_LIMIT_WINDOW_MS;
+  const recent = (inviteTimestamps.get(callerId) ?? []).filter((t) => t > cutoff);
+
+  if (recent.length >= RATE_LIMIT_MAX) {
+    inviteTimestamps.set(callerId, recent); // prune while we're here
+    const oldest = recent[0];
+    return Math.max(1, Math.ceil((oldest + RATE_LIMIT_WINDOW_MS - now) / 1000));
+  }
+
+  recent.push(now);
+  inviteTimestamps.set(callerId, recent);
+
+  // Opportunistic cleanup so the map can't grow unbounded across many callers.
+  if (inviteTimestamps.size > 5_000) {
+    for (const [key, times] of inviteTimestamps) {
+      const kept = times.filter((t) => t > cutoff);
+      if (kept.length === 0) inviteTimestamps.delete(key);
+      else inviteTimestamps.set(key, kept);
+    }
+  }
+  return null;
+}
+
 // ---- Request handler -----------------------------------------------------
 
 const corsHeaders = {
@@ -303,6 +344,29 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: "Invalid token" }, 401);
   }
   const callerId = userData.user.id;
+
+  // RATE LIMIT: cap invites per user per minute. Enforced here — after we know
+  // who the caller is, but before any invite lookup or APNs work — so a spammer
+  // is rejected as cheaply as possible. 429 with Retry-After is the standard
+  // signal; the client can surface it as "You're sending invites too quickly."
+  const retryAfter = rateLimitRetryAfter(callerId);
+  if (retryAfter !== null) {
+    console.warn(`⛔ rate-limited invite push from ${callerId} — retry in ${retryAfter}s`);
+    return new Response(
+      JSON.stringify({
+        error: "Too many invites. Please wait a moment before sending more.",
+        retryAfterSeconds: retryAfter,
+      }),
+      {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": String(retryAfter),
+          ...corsHeaders,
+        },
+      },
+    );
+  }
 
   let body: InvitePayload;
   try {
