@@ -80,6 +80,9 @@ nonisolated struct SerializedGameState: Codable, Sendable {
     var isWallGame: Bool
     var showEndGameOverlay: Bool
     var winnerName: String
+    /// Seat index of the winner (-1 = none). Optional in decode for backward
+    /// compatibility with in-flight games broadcast by older clients.
+    var winnerIndex: Int?
     var showMahjongAnimation: Bool?
     var winningHandName: String?
     var winningHandCategory: String?

@@ -153,6 +153,10 @@ class GameViewModel {
     var selectedCardYear: NMJLCardYear = .year2026
     var winningHand: NMJLHand?
     var winnerName: String = ""
+    /// Seat index of the winner (-1 = none/draw). Authoritative identity signal for
+    /// stats — win/loss must be decided by seat, not by matching display-name strings
+    /// (two players can share a name, and online winnerName arrives as a broadcast string).
+    var winnerIndex: Int = -1
     var invalidMahjongMessage: String?
 
     var isWallGame: Bool = false
@@ -397,6 +401,7 @@ class GameViewModel {
         awaitingCall = false
         winningHand = nil
         winnerName = ""
+        winnerIndex = -1
         invalidMahjongMessage = nil
         isWallGame = false
         showEndGameOverlay = false
@@ -2268,6 +2273,7 @@ class GameViewModel {
 
             winningHand = matchedHand
             winnerName = players[playerIndex].profile.displayName
+            winnerIndex = playerIndex
             players[playerIndex].score += matchedHand.points
             gameStatus = .completed
             isWallGame = false
@@ -2317,6 +2323,7 @@ class GameViewModel {
         showEndGameOverlay = true
         winningHand = nil
         winnerName = ""
+        winnerIndex = -1
         gameMessage = "Wall Game! No tiles remaining — nobody wins."
         callAvailable = false
         availableCalls = []
@@ -2386,6 +2393,7 @@ class GameViewModel {
         if let matched = HandMatcher.checkWin(hand: players[botIdx].hand, exposedSets: players[botIdx].exposedSets, card: activeCard) {
             winningHand = matched
             winnerName = players[botIdx].profile.displayName
+            winnerIndex = botIdx
             players[botIdx].score += matched.points
             gameStatus = .completed
             isWallGame = false
@@ -2856,6 +2864,7 @@ class GameViewModel {
         awaitingCall = false
         winningHand = nil
         winnerName = ""
+        winnerIndex = -1
         invalidMahjongMessage = nil
         isWallGame = false
         showEndGameOverlay = false
@@ -2965,6 +2974,7 @@ class GameViewModel {
             isWallGame: isWallGame,
             showEndGameOverlay: showEndGameOverlay,
             winnerName: winnerName,
+            winnerIndex: winnerIndex,
             showMahjongAnimation: showMahjongAnimation,
             winningHandName: winningHand?.name,
             winningHandCategory: winningHand?.category,
@@ -3002,6 +3012,7 @@ class GameViewModel {
         isWallGame = state.isWallGame
         showEndGameOverlay = state.showEndGameOverlay
         winnerName = state.winnerName
+        winnerIndex = state.winnerIndex ?? -1
         if let anim = state.showMahjongAnimation {
             // Latch the win animation on; never let a later state turn it off
             // (the receiver clears it locally when the overlay is dismissed).
