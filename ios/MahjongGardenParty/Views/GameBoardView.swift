@@ -80,6 +80,16 @@ struct GameBoardView: View {
         .fullScreenCover(isPresented: $showSuggestedHands) {
             SuggestedHandsView()
         }
+        .onChange(of: gameViewModel.gameStatus) { _, newStatus in
+            // Record stats as soon as the game completes — not only when the player
+            // taps "Return to Lobby". Force-quitting, backgrounding, or navigating
+            // away previously meant the game was never counted, systematically
+            // undercounting totalGames. recordGameResultIfNeeded is idempotent
+            // (guarded by hasRecordedResult), so the button path is now just a backup.
+            if newStatus == .completed {
+                recordGameResultIfNeeded()
+            }
+        }
         .task(id: gameViewModel.isOnlineMode) {
             guard gameViewModel.isOnlineMode else { return }
             // Immediate sync on board entry so an invitee that landed on a stale
@@ -943,7 +953,12 @@ struct GameBoardView: View {
         hasRecordedResult = true
 
         let opponents = gameViewModel.players.filter { !gameViewModel.isLocalPlayer($0) }.map { $0.profile.displayName }
-        let humanIsWinner = gameViewModel.winnerName == (gameViewModel.humanPlayer?.profile.displayName ?? "You")
+        // IDENTITY-BASED WIN CHECK. Compare the winner's SEAT to the local player's
+        // seat, not display-name strings — two players can share a name, and in online
+        // games winnerName arrives as a broadcast string. winnerIndex is set wherever a
+        // win is declared and travels in the online state.
+        let humanIsWinner = gameViewModel.winnerIndex >= 0
+            && gameViewModel.winnerIndex == gameViewModel.humanPlayerIndex
 
         let result: MatchResult
         let score: Int
