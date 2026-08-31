@@ -101,7 +101,19 @@ class GameViewModel {
 
     var hasSubmittedCharlestonPass: Bool {
         guard let idx = humanPlayerIndex else { return false }
-        if isOnlineMode { return charlestonPendingPasses[idx] != nil }
+        if isOnlineMode {
+            // Treat our own submission as authoritative for THIS phase. Reading only
+            // charlestonPendingPasses makes the waiting screen flicker: a stale
+            // heartbeat momentarily drops our entry (UI snaps back to the tile
+            // picker), the latch re-injects it a moment later (UI snaps forward), and
+            // the user sees the two fight roughly once per heartbeat. The latch is a
+            // fact about what WE did this phase, so it can't be churned by remote
+            // state — consulting it keeps the screen steady while the map settles.
+            if let latch = selfSubmittedPassLatch, latch.phase == charlestonPhase.rawValue {
+                return true
+            }
+            return charlestonPendingPasses[idx] != nil
+        }
         // Solo: only meaningful during the sequential courtesy pass, where the
         // human submits first and then waits while each bot picks in turn.
         // CRITICAL: while the chooser is still up the human hasn't actually picked
@@ -958,6 +970,11 @@ class GameViewModel {
     }
 
     private func advanceCharlestonPhase() {
+        // Release our own-pass latch: we're leaving the phase it was keyed to, so it
+        // must not keep the waiting screen up on the new phase. applyRemoteState also
+        // releases it, but that only runs while state is arriving — clearing here too
+        // means a dropped channel can't strand us on "Tiles passed".
+        selfSubmittedPassLatch = nil
         // Best-effort cleanup: prune `charleston_passes` rows for the phase we're
         // leaving so the table doesn't accumulate over the full Charleston cycle.
         // Phase-filtered queries already ignore stale rows, but a smaller table
