@@ -99,7 +99,7 @@ struct CharlestonView: View {
 
                     suggestedHandsButton
                     Spacer(minLength: L.sectionSpacing)
-                    if !gameViewModel.showCourtesyOptions && !gameViewModel.hasSubmittedCharlestonPass && gameViewModel.isMyCourtesyTurn && !(gameViewModel.charlestonPhase.isCourtesy && gameViewModel.courtesyTileCount > 0 && gameViewModel.isOnlineMode && gameViewModel.courtesyCurrentSeat != gameViewModel.localSeatIndex) {
+                    if !gameViewModel.showCourtesyOptions && !gameViewModel.hasSubmittedCharlestonPass && gameViewModel.isMyCourtesyTurn {
                         if gameViewModel.requiredTileCount > 0 {
                             selectedTilesPreview
                         }

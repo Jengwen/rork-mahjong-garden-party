@@ -533,24 +533,32 @@ class GameViewModel {
 
     private func updateCourtesyMessage() {
         guard charlestonPhase.isCourtesy, courtesyTileCount > 0 else { return }
-        let mySeat = localSeatIndex
-        if courtesyCurrentSeat == mySeat {
+        // Courtesy is parallel: everyone picks at once, so the message reflects our
+        // own state rather than naming whichever seat the old turn pointer was on.
+        if charlestonPendingPasses[localSeatIndex] != nil {
+            gameMessage = "Tiles passed — waiting for other players..."
+        } else {
             gameMessage = "Courtesy Pass: Select \(courtesyTileCount) tile\(courtesyTileCount == 1 ? "" : "s") to pass across"
-        } else if courtesyCurrentSeat < players.count {
-            let name = players[courtesyCurrentSeat].profile.displayName
-            gameMessage = "Courtesy Pass: Waiting for \(name) to pick…"
         }
     }
 
-    /// Whether the local human can currently pick courtesy tiles (their seat's turn).
+    /// Whether the local human can currently pick courtesy tiles.
+    /// Courtesy is now PARALLEL online, matching the regular passes: every seat may
+    /// pick at any time and the exchange executes once all four have submitted.
+    /// It used to be strictly sequential (East, then each seat in turn), which meant
+    /// one distracted or backgrounded player halted the entire table with no way for
+    /// anyone else to make progress. Kept as a property (rather than deleting call
+    /// sites) so solo mode's turn-by-turn presentation is unaffected.
     var isMyCourtesyTurn: Bool {
         guard charlestonPhase.isCourtesy, courtesyTileCount > 0, !showCourtesyOptions else { return true }
         if !isOnlineMode { return true }
-        return courtesyCurrentSeat == localSeatIndex
+        return true
     }
 
-    /// Host-only: if the seat whose turn it is happens to be a bot, auto-pick its
-    /// tiles and advance until we land on a human seat (or all 4 seats have submitted).
+    /// Host-only: auto-pick courtesy tiles for every bot seat that hasn't submitted,
+    /// then finalize if all four seats are in. Courtesy is parallel now, so there's no
+    /// turn pointer to walk — bots fill immediately and humans submit whenever they're
+    /// ready, in any order.
     private func advanceCourtesyTurnPastBots() {
         guard isOnlineHost, charlestonPhase.isCourtesy, courtesyTileCount > 0 else { return }
         // CRITICAL: rectify bot flags BEFORE we auto-fill any seat. A stale
@@ -558,33 +566,17 @@ class GameViewModel {
         // without this fix the host would auto-pick that seat's tiles and skip the
         // invitee entirely on the very first Charleston step (see user report).
         selfRectifyBotFlags()
-        var safety = 0
-        // Skip any seats that have already submitted (humans or bots). Whenever the
-        // pointer lands on a bot that hasn't submitted yet, auto-pick for them.
-        while safety < 16, courtesyCurrentSeat < players.count {
-            let i = courtesyCurrentSeat
-            if charlestonPendingPasses[i] != nil {
-                advanceCourtesyTurn()
-                safety += 1
-                continue
+        for i in 0..<players.count where charlestonPendingPasses[i] == nil && players[i].isBot {
+            let indices = HandMatcher.selectBotCharlestonTiles(
+                hand: players[i].hand,
+                targetHand: players[i].targetHand,
+                count: courtesyTileCount
+            )
+            var botTiles: [MahjongTile] = []
+            for idx in indices.sorted(by: >) where idx < players[i].hand.count {
+                botTiles.append(players[i].hand.remove(at: idx))
             }
-            if players[i].isBot {
-                let indices = HandMatcher.selectBotCharlestonTiles(
-                    hand: players[i].hand,
-                    targetHand: players[i].targetHand,
-                    count: courtesyTileCount
-                )
-                var botTiles: [MahjongTile] = []
-                for idx in indices.sorted(by: >) where idx < players[i].hand.count {
-                    botTiles.append(players[i].hand.remove(at: idx))
-                }
-                charlestonPendingPasses[i] = botTiles
-                advanceCourtesyTurn()
-                safety += 1
-                continue
-            }
-            // Landed on a human seat that hasn't submitted yet — wait for them.
-            break
+            charlestonPendingPasses[i] = botTiles
         }
         if (0..<players.count).allSatisfy({ charlestonPendingPasses[$0] != nil }) {
             tryFinalizeCharlestonPass()
@@ -677,10 +669,6 @@ class GameViewModel {
         // once every seat (humans + bots) has submitted.
         if isOnlineMode {
             guard charlestonPendingPasses[playerIdx] == nil else { return }
-            // Courtesy pass is sequential by turn order (East first). Block out-of-turn picks.
-            if charlestonPhase.isCourtesy && courtesyTileCount > 0 && courtesyCurrentSeat != playerIdx {
-                return
-            }
             let selectedIndicesSorted = charlestonSelectedIndices.sorted(by: >)
             var passed: [MahjongTile] = []
             for idx in selectedIndicesSorted where idx < players[playerIdx].hand.count {
@@ -690,15 +678,10 @@ class GameViewModel {
             charlestonSelectedIndices = []
             // Latch our own submission keyed by the current phase so an equal-phase
             // stale heartbeat can't silently wipe it and bounce us back to the picker.
-            if !charlestonPhase.isCourtesy {
-                selfSubmittedPassLatch = (phase: charlestonPhase.rawValue, tiles: passed)
-            }
-            if charlestonPhase.isCourtesy && courtesyTileCount > 0 {
-                advanceCourtesyTurn()
-                updateCourtesyMessage()
-            } else {
-                gameMessage = "Tiles passed — waiting for other players..."
-            }
+            // Now applied to courtesy too: parallel courtesy submits race heartbeats
+            // exactly like the regular passes do, so they need the same protection.
+            selfSubmittedPassLatch = (phase: charlestonPhase.rawValue, tiles: passed)
+            gameMessage = "Tiles passed — waiting for other players..."
             notifyOnlineSync()
             if isOnlineHost {
                 if charlestonPhase.isCourtesy && courtesyTileCount > 0 {
