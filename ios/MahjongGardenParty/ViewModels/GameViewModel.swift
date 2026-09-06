@@ -114,6 +114,13 @@ class GameViewModel {
         seatRevisions[seat] += 1
     }
 
+    /// Bump OUR OWN seat's revision. No-op outside online play, where there is
+    /// no remote state to defend against.
+    func bumpOwnSeatRevision() {
+        guard isOnlineMode else { return }
+        bumpSeatRevision(localSeatIndex)
+    }
+
     /// Latch for THIS seat's freshly drawn tile in online play.
     /// The hand reconciliation in applyRemoteState preserves ORDER but not
     /// MEMBERSHIP — it keeps only tiles present in the incoming hand. So a host
@@ -707,6 +714,8 @@ class GameViewModel {
             // exactly like the regular passes do, so they need the same protection.
             selfSubmittedPassLatch = (phase: charlestonPhase.rawValue, tiles: passed)
             gameMessage = "Tiles passed — waiting for other players..."
+            // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+            bumpOwnSeatRevision()
             notifyOnlineSync()
             if isOnlineHost {
                 if charlestonPhase.isCourtesy && courtesyTileCount > 0 {
@@ -777,6 +786,8 @@ class GameViewModel {
 
         charlestonSelectedIndices = []
         advanceCharlestonPhase()
+        // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+        bumpOwnSeatRevision()
         notifyOnlineSync()
     }
 
@@ -1219,6 +1230,8 @@ class GameViewModel {
         // doesn't reveal that the player drew anything — only their discard is
         // announced (matches the rule for what info is shared at the table).
         gameMessage = "\(humanName) is thinking…"
+        // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+        bumpOwnSeatRevision()
         notifyOnlineSync()
         armOrCancelRemoteHumanTurnWatchdog()
     }
@@ -1267,6 +1280,8 @@ class GameViewModel {
         moveHistory.append(move)
 
         checkAllPlayersForCalls(discardedBy: playerIdx)
+        // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+        bumpOwnSeatRevision()
         notifyOnlineSync()
         armOrCancelRemoteHumanTurnWatchdog()
         armOrCancelNonHostPostDiscardWatchdog()
@@ -1341,6 +1356,8 @@ class GameViewModel {
             callResponses[playerIdx] = "called"
             let callerName = players[playerIdx].profile.displayName
             gameMessage = "\(callerName) is calling \(type.rawValue)…"
+            // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+            bumpOwnSeatRevision()
             notifyOnlineSync()
         }
         // Local picker prompt — set after the broadcast so it stays caller-only.
@@ -1420,6 +1437,8 @@ class GameViewModel {
 
         let humanName = players[playerIdx].profile.displayName
         gameMessage = "\(humanName) called \(type.rawValue)! Now discard a tile."
+        // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+        bumpOwnSeatRevision()
         notifyOnlineSync()
     }
 
@@ -1440,6 +1459,8 @@ class GameViewModel {
            let playerIdx = humanPlayerIndex,
            callResponses[playerIdx] == "called" {
             callResponses[playerIdx] = "skip"
+            // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+            bumpOwnSeatRevision()
             notifyOnlineSync()
         }
     }
@@ -1460,6 +1481,8 @@ class GameViewModel {
             callWindowWatchdog?.cancel()
             callWindowWatchdog = nil
         }
+        // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+        bumpOwnSeatRevision()
         notifyOnlineSync()
     }
 
@@ -1510,6 +1533,8 @@ class GameViewModel {
             if isOnlineHost {
                 tryFinalizeCallWindow()
             } else {
+                // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+                bumpOwnSeatRevision()
                 notifyOnlineSync()
             }
             return
@@ -2240,6 +2265,8 @@ class GameViewModel {
                         // host's next heartbeat doesn't roll the hand/exposed-set
                         // back to the pre-swap snapshot — that's the "swap reverses
                         // itself" symptom invitees see in multiplayer.
+                        // STEP 2 (seat-ownership): our own seat changed locally — bump before pushing.
+                        bumpOwnSeatRevision()
                         notifyOnlineSync()
                         let stillHasSwaps = checkHasMatchingTileForJokerSwap(playerIndex: playerIdx)
                         if stillHasSwaps {
@@ -2327,6 +2354,9 @@ class GameViewModel {
             callerFollowThroughWatchdog = nil
             nonHostPostDiscardWatchdog?.cancel()
             nonHostPostDiscardWatchdog = nil
+            // STEP 2 (seat-ownership): bump the seat that declared, which on the
+            // host may be a bot rather than us.
+            bumpSeatRevision(playerIndex)
             notifyOnlineSync()
         } else {
             if !players[playerIndex].isBot {
@@ -2522,6 +2552,9 @@ class GameViewModel {
             lines.append("hasDrawnThisTurn: \(hasDrawnThisTurn) awaitingCall: \(awaitingCall)")
             lines.append("callAvailable: \(callAvailable) calls: \(availableCalls.map { String(describing: $0) })")
             lines.append("call responses: \(callResponses) eligible: \(eligibleCallSeats.sorted())")
+            // STEP 2 (seat-ownership): per-seat revisions. Half the local mutations
+            // (draw, discard, calls) happen during play, so surface them here too.
+            lines.append("seat revs: " + seatRevisions.enumerated().map { "\($0.offset)=\($0.element)" }.joined(separator: " "))
             lines.append("last discard: \(lastDiscardedTile?.displayName ?? "–") by seat \(lastDiscardPlayerIndex.map { String($0) } ?? "–")")
         }
         lines.append("wall: \(wallCount) discards: \(discardCount)")
