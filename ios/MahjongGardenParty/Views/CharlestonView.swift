@@ -170,6 +170,10 @@ struct CharlestonView: View {
                 diagRow("My pass", gameViewModel.hasSubmittedCharlestonPass ? "submitted" : "pending")
                 diagRow("Pending seats", gameViewModel.charlestonPendingPasses.keys.sorted().map(String.init).joined(separator: ","))
                 diagRow("Players", gameViewModel.players.enumerated().map { "\($0.offset)\($0.element.isBot ? "B" : "H")" }.joined(separator: " "))
+                // STEP 2 (seat-ownership): watch each seat's revision climb. Once
+                // enforcement lands in step 4, a stale slice is one whose revision
+                // trails ours — this row is how that becomes visible in a screenshot.
+                diagRow("Seat revs", gameViewModel.seatRevisions.enumerated().map { "\($0.offset)=\($0.element)" }.joined(separator: " "))
                 diagRow("Courtesy", gameViewModel.showCourtesyOptions ? "chooser" : (gameViewModel.charlestonPhase.isCourtesy ? "turn=\(gameViewModel.courtesyCurrentSeat) count=\(gameViewModel.courtesyTileCount)" : "no"))
                 if gameViewModel.isOnlineMode {
                     diagRow("Realtime", onlineVM.realtimeStatus)
