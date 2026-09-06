@@ -145,7 +145,7 @@ struct ConversationView: View {
                             let isMe = row.message.senderId == socialVM.currentUserId
 
                             if row.showTimestamp {
-                                Text(formatGroupTimestamp(row.message.createdAt))
+                                Text(row.timestampText)
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
                                     .padding(.top, 8)
@@ -276,27 +276,32 @@ struct ConversationView: View {
         let stableId: String
         let message: DirectMessage
         let showTimestamp: Bool
+        /// Precomputed in buildRows. Previously the ForEach body called
+        /// formatGroupTimestamp(), which parsed a date per row on every view
+        /// update — that ICU parse inside the row body is what crashed the app.
+        let timestampText: String
     }
 
     private func buildRows(from messages: [DirectMessage]) -> [ChatRow] {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallback = ISO8601DateFormatter()
-
         var rows: [ChatRow] = []
         rows.reserveCapacity(messages.count)
         var prevDate: Date?
         for (index, message) in messages.enumerated() {
             var showTimestamp = (index == 0)
-            let currentDate: Date? = {
-                guard let ts = message.createdAt else { return nil }
-                return formatter.date(from: ts) ?? fallback.date(from: ts)
-            }()
+            let currentDate = ISO8601.date(from: message.createdAt)
             if let cur = currentDate, let prev = prevDate, cur.timeIntervalSince(prev) > 300 {
                 showTimestamp = true
             }
             let key = message.id ?? "local-\(index)-\(message.senderId)-\(message.createdAt ?? "")"
-            rows.append(ChatRow(id: key, stableId: key, message: message, showTimestamp: showTimestamp))
+            rows.append(ChatRow(
+                id: key,
+                stableId: key,
+                message: message,
+                showTimestamp: showTimestamp,
+                // Format here, once, from the date we already parsed — the row body
+                // must stay free of date parsing.
+                timestampText: showTimestamp ? Self.groupTimestampText(currentDate) : ""
+            ))
             if let cur = currentDate { prevDate = cur }
         }
         return rows
@@ -310,13 +315,10 @@ struct ConversationView: View {
         }
     }
 
-    private func formatGroupTimestamp(_ ts: String?) -> String {
-        guard let ts else { return "" }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallback = ISO8601DateFormatter()
-        guard let date = formatter.date(from: ts) ?? fallback.date(from: ts) else { return "" }
-
+    /// Formats an already-parsed date. Takes a Date rather than a string so that
+    /// no ISO8601 parsing can happen on a view-update path.
+    private static func groupTimestampText(_ date: Date?) -> String {
+        guard let date else { return "" }
         let calendar = Calendar.current
         if calendar.isDateInToday(date) {
             let df = DateFormatter()
@@ -373,10 +375,7 @@ struct MessageBubble: View {
     }
 
     private func formatTime(_ ts: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallback = ISO8601DateFormatter()
-        guard let date = formatter.date(from: ts) ?? fallback.date(from: ts) else { return "" }
+        guard let date = ISO8601.date(from: ts) else { return "" }
         let df = DateFormatter()
         df.timeStyle = .short
         return df.string(from: date)

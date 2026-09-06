@@ -600,13 +600,9 @@ struct MessagePreviewRow: View {
     }
 
     private func formatTimestamp(_ ts: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = formatter.date(from: ts) else {
-            let fallback = ISO8601DateFormatter()
-            guard let d = fallback.date(from: ts) else { return "" }
-            return RelativeDateTimeFormatter().localizedString(for: d, relativeTo: Date())
-        }
+        // ISO8601 parsing goes through the crash-safe helper: the ICU-backed
+        // ISO8601DateFormatter can abort the process on bad input.
+        guard let date = ISO8601.date(from: ts) else { return "" }
         return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
     }
 }
