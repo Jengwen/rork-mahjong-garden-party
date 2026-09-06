@@ -99,6 +99,31 @@ class GameViewModel {
     /// Keyed by charlestonPhase.rawValue so a genuine new phase never re-injects a stale pass.
     private var selfSubmittedPassLatch: (phase: Int, tiles: [MahjongTile])? = nil
 
+    /// SEAT-OWNERSHIP REFACTOR — STEP 1.
+    /// Revision we believe each seat is at, index = seat. Bumped locally when we
+    /// act on our own seat, and (later) by the host for authoritative events.
+    /// Step 1 only populates and broadcasts these; nothing reads them on receive
+    /// yet, so behaviour is unchanged. Internal rather than private so the
+    /// diagnostics panel can surface them.
+    var seatRevisions: [Int] = [0, 0, 0, 0]
+
+    /// Bump this seat's revision. Call immediately before notifyOnlineSync()
+    /// on any local mutation of our own seat.
+    func bumpSeatRevision(_ seat: Int) {
+        guard seat >= 0, seat < seatRevisions.count else { return }
+        seatRevisions[seat] += 1
+    }
+
+    /// Latch for THIS seat's freshly drawn tile in online play.
+    /// The hand reconciliation in applyRemoteState preserves ORDER but not
+    /// MEMBERSHIP — it keeps only tiles present in the incoming hand. So a host
+    /// heartbeat carrying our pre-draw snapshot silently deletes the tile we just
+    /// drew ("draw tile disappeared and reappeared"), and the turn stalls because
+    /// hasDrawnThisTurn stays true while the tile to discard is gone.
+    /// Cleared as soon as we discard or the turn moves on.
+    /// (Removed in step 5 once revision enforcement makes it redundant.)
+    private var selfDrawnTileLatch: MahjongTile? = nil
+
     var hasSubmittedCharlestonPass: Bool {
         guard let idx = humanPlayerIndex else { return false }
         if isOnlineMode {
@@ -1184,6 +1209,8 @@ class GameViewModel {
         tile.isRevealed = true
         players[playerIdx].hand.append(tile)
         hasDrawnThisTurn = true
+        // Protect the drawn tile from being erased by a stale remote snapshot.
+        if isOnlineMode { selfDrawnTileLatch = tile }
         invalidMahjongMessage = nil
         callAvailable = false
         availableCalls = []
@@ -2933,7 +2960,7 @@ class GameViewModel {
     // MARK: - State Serialization
 
     func serializeState() -> SerializedGameState {
-        let serializedPlayers = players.map { player in
+        let serializedPlayers = players.enumerated().map { (seat, player) in
             SerializedPlayer(
                 displayName: player.profile.displayName,
                 avatarImage: player.profile.avatarImage,
@@ -2942,7 +2969,11 @@ class GameViewModel {
                 exposedSets: player.exposedSets,
                 score: player.score,
                 isBot: player.isBot,
-                userId: nil
+                userId: nil,
+                // STEP 1: stamp this seat's revision. Nothing reads it on receive
+                // yet — the field is populated now so it is flowing and
+                // observable before enforcement is switched on in step 4.
+                revision: seat < seatRevisions.count ? seatRevisions[seat] : 0
             )
         }
 
@@ -2983,7 +3014,14 @@ class GameViewModel {
             selectedCardYear: selectedCardYear.rawValue,
             callWindow: nil,
             callResponses: Dictionary(uniqueKeysWithValues: callResponses.map { (String($0.key), $0.value) }),
-            callResponseDiscardId: callResponseDiscardId?.uuidString
+            callResponseDiscardId: callResponseDiscardId?.uuidString,
+            // STEP 1: revisions for the seat-keyed maps that live outside
+            // `players` (charlestonPendingPasses, callResponses). Same values as
+            // the per-player stamps — one revision per seat covers that seat's
+            // whole slice. Populated on send, ignored on receive until step 4.
+            seatActionRevisions: Dictionary(
+                uniqueKeysWithValues: seatRevisions.enumerated().map { (String($0.offset), $0.element) }
+            )
         )
     }
 
@@ -3397,6 +3435,27 @@ class GameViewModel {
             if merged.count == newHand.count {
                 players[mySeat].hand = merged
             }
+        }
+
+        // DRAWN-TILE LATCH. The reconciliation above keeps only tiles present in
+        // the INCOMING hand, so a heartbeat carrying a pre-draw snapshot deletes
+        // the tile we just drew. Re-insert it while it's still ours to discard.
+        // (Removed in step 5 of the seat-ownership refactor.)
+        if isOnlineMode,
+           gameStatus == .playing,
+           let drawn = selfDrawnTileLatch,
+           mySeat >= 0, mySeat < players.count,
+           currentPlayerIndex == mySeat,
+           hasDrawnThisTurn,
+           !players[mySeat].hand.contains(where: { $0.id == drawn.id }) {
+            print("🃏 re-inserting latched drawn tile for seat \(mySeat) — stale snapshot had removed it")
+            players[mySeat].hand.append(drawn)
+            if !isOnlineHost { onlineSyncHandler?() }
+        }
+
+        if selfDrawnTileLatch != nil,
+           gameStatus != .playing || currentPlayerIndex != mySeat || !hasDrawnThisTurn {
+            selfDrawnTileLatch = nil
         }
 
         // COURTESY-OPTIONS ONE-WAY LATCH. Once East has chosen the courtesy tile
