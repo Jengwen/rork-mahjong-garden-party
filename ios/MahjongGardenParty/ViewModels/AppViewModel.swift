@@ -124,7 +124,7 @@ class AppViewModel {
                     opponentNames: r.opponentNames,
                     result: MatchResult(rawValue: r.result) ?? .loss,
                     score: r.score,
-                    date: ISO8601DateFormatter().date(from: r.playedAt ?? "") ?? Date(),
+                    date: ISO8601.date(from: r.playedAt) ?? Date(),
                     gameMode: r.gameMode,
                     winningHandName: nil
                 )
