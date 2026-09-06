@@ -97,6 +97,11 @@ nonisolated struct SerializedGameState: Codable, Sendable {
     /// The discard id that `callResponses` corresponds to. When `lastDiscardedTile.id`
     /// no longer matches this, responses are stale and reset.
     var callResponseDiscardId: String?
+    /// SEAT-OWNERSHIP REFACTOR — STEP 1 (populated on send, ignored on receive).
+    /// Revision per seat for the seat-keyed dictionaries that live outside
+    /// `players` — `charlestonPendingPasses` and `callResponses`. Keyed by seat
+    /// index as String, mirroring the other seat-keyed maps in this struct.
+    var seatActionRevisions: [String: Int]?
 }
 
 nonisolated struct SerializedPlayer: Codable, Sendable {
@@ -108,6 +113,14 @@ nonisolated struct SerializedPlayer: Codable, Sendable {
     var score: Int
     var isBot: Bool
     var userId: String?
+    /// SEAT-OWNERSHIP REFACTOR — STEP 1 (populated on send, ignored on receive).
+    /// Monotonic revision for this seat's slice. Incremented by whoever
+    /// legitimately mutates the seat: the seat's own client for its own actions,
+    /// or the host for authoritative events (Charleston exchange, call exposure).
+    /// Once enforcement lands, a remote slice is only accepted when its revision
+    /// is >= the one we already hold, which is what stops a stale heartbeat from
+    /// erasing a local action. Optional so older clients mid-session still decode.
+    var revision: Int?
 }
 
 nonisolated struct CallWindowState: Codable, Sendable {
