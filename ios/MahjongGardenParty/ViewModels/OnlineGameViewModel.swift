@@ -449,12 +449,58 @@ class OnlineGameViewModel {
     }
 
     /// Re-inject our own participant entry whenever a server fetch overwrites the list
-    /// without including us. This is the RLS-proof safety net every refresh path runs.
+    /// without including us, AND repair the database row if it is genuinely missing.
+    ///
+    /// This used to only synthesize a local entry, on the theory that RLS was hiding
+    /// our row from the SELECT. That premise is wrong: the SELECT policy on
+    /// `game_participants` is `true` — every authenticated user can read every
+    /// participant row. So a fetch that comes back without us means the row does not
+    /// exist, and faking it locally papers over a real problem:
+    ///
+    ///   - `charleston_passes` RLS *does* gate on participation. With no row, our
+    ///     SELECTs return zero rows silently, so the DB-pull recovery path is dead
+    ///     and the client goes deaf (observed: a seat 94s without an inbound update).
+    ///   - We still render in everyone's UI, because the seat list comes from
+    ///     `game_data`, not from `game_participants` — hence a "ghost" player that
+    ///     looks present but is invisible to every participation-gated query.
+    ///
+    /// So: keep the local synthesis (the UI should not flicker), but also fire a
+    /// one-shot insert to heal the row. Failures are ignored — a duplicate just
+    /// means someone else won the race, which is the outcome we wanted anyway.
     private func mergeSelfIntoParticipants() {
         guard let myId = myUserId, let gameId = currentGameId else { return }
         if currentParticipants.contains(where: { $0.userId == myId }) { return }
         guard let seat = myKnownSeat else { return }
         ensureSelfInParticipants(gameId: gameId, seatIndex: seat)
+        repairMissingParticipantRow(gameId: gameId, seatIndex: seat)
+    }
+
+    /// Seats we've already attempted to repair, so a refresh loop can't spam inserts.
+    private var participantRepairAttempted: Set<String> = []
+
+    /// Best-effort insert of our own `game_participants` row when a server fetch
+    /// shows it missing. Idempotent per game+seat for this session.
+    private func repairMissingParticipantRow(gameId: String, seatIndex: Int) {
+        let key = "\(gameId)#\(seatIndex)"
+        guard !participantRepairAttempted.contains(key) else { return }
+        participantRepairAttempted.insert(key)
+        let name = myDisplayName
+        let avatar = myAvatarImage
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.service.joinGame(
+                    gameId: gameId,
+                    seatIndex: seatIndex,
+                    displayName: name,
+                    avatarImage: avatar
+                )
+                print("\u{1FA79} repaired missing game_participants row for seat \(seatIndex)")
+            } catch {
+                // Duplicate (someone else inserted it) or a transient failure — both fine.
+                print("\u{2139}\u{FE0F} participant row repair for seat \(seatIndex) not applied: \(error)")
+            }
+        }
     }
 
     /// Find an existing waiting game with an open seat (that the user isn't already in),
