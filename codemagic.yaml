@@ -83,8 +83,11 @@ workflows:
       <<: *signing
       vars:
         <<: *common_vars
-        # No MULTIPLAYER_BETA — FeatureFlags.multiplayerEnabled stays false.
-        SWIFT_CONDITIONS: ""
+        # Codemagic rejects empty env vars, so this carries a harmless marker
+        # instead of "". RELEASE_BUILD is deliberately referenced NOWHERE in the
+        # code — its only job is to be a non-empty value that is not
+        # MULTIPLAYER_BETA, so FeatureFlags.multiplayerEnabled stays false.
+        SWIFT_CONDITIONS: "RELEASE_BUILD"
       xcode: latest
     triggering:
       events:
