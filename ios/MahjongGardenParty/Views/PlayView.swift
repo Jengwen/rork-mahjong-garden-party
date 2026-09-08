@@ -8,6 +8,7 @@ struct PlayView: View {
     @State private var selectedMode: GameMode = .solo
     @State private var showCardPreview: Bool = false
     @State private var showMultiplayerOptions: Bool = false
+    @State private var showMultiplayerComingSoon: Bool = false
     @State private var onlineVM = OnlineGameViewModel()
     /// Drives the spinner on the Invite Players button while the game is being
     /// created. Replaces `showCreateGame` — there is no interstitial sheet to show
@@ -44,6 +45,11 @@ struct PlayView: View {
             }
             .sheet(isPresented: $showCardPreview) {
                 CardReferenceView(card: gameViewModel.activeCard)
+            }
+            .alert(FeatureFlags.multiplayerComingSoonTitle, isPresented: $showMultiplayerComingSoon) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(FeatureFlags.multiplayerComingSoonMessage)
             }
             .sheet(isPresented: $showMultiplayerOptions) {
                 MultiplayerOptionsSheet(
@@ -174,9 +180,11 @@ struct PlayView: View {
                 )
             case .multiplayer:
                 modeInfoCard(
-                    title: "Live Multiplayer",
-                    description: "Play real-time Mahjong with 3 other players.",
-                    features: ["Real-time gameplay"]
+                    title: FeatureFlags.multiplayerEnabled ? "Live Multiplayer" : "Live Multiplayer — Coming Soon",
+                    description: FeatureFlags.multiplayerEnabled
+                        ? "Play real-time Mahjong with 3 other players."
+                        : FeatureFlags.multiplayerComingSoonMessage,
+                    features: FeatureFlags.multiplayerEnabled ? ["Real-time gameplay"] : ["In the works"]
                 )
             case .async:
                 modeInfoCard(
@@ -290,6 +298,11 @@ struct PlayView: View {
                 return
             }
             if selectedMode == .multiplayer {
+                // Multiplayer is temporarily closed off — see FeatureFlags.
+                guard FeatureFlags.multiplayerEnabled else {
+                    showMultiplayerComingSoon = true
+                    return
+                }
                 showMultiplayerOptions = true
             } else {
                 gameViewModel.resetOnlineMode()

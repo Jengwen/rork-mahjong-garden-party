@@ -13,6 +13,7 @@ struct ConversationView: View {
     @State private var showLobby: Bool = false
     @State private var showOnlineGameBoard: Bool = false
     @State private var acceptingInviteId: String?
+    @State private var showMultiplayerComingSoon: Bool = false
     @State private var messageToDelete: DirectMessage?
     @FocusState private var isInputFocused: Bool
 
@@ -51,6 +52,11 @@ struct ConversationView: View {
         }
         .navigationDestination(isPresented: $showLobby) {
             GameLobbyView(onlineVM: onlineVM, gameViewModel: gameViewModel)
+        }
+        .alert(FeatureFlags.multiplayerComingSoonTitle, isPresented: $showMultiplayerComingSoon) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(FeatureFlags.multiplayerComingSoonMessage)
         }
         .fullScreenCover(isPresented: $showOnlineGameBoard, onDismiss: {
             OrientationManager.shared.lockPortrait()
@@ -121,6 +127,13 @@ struct ConversationView: View {
     }
 
     private func acceptInvite(gameId: String, messageId: String?) {
+        // Multiplayer is temporarily closed off — see FeatureFlags. Accepting an
+        // invite would drop the player into a lobby for a mode that isn't
+        // available, so surface the same coming-soon message instead.
+        guard FeatureFlags.multiplayerEnabled else {
+            showMultiplayerComingSoon = true
+            return
+        }
         acceptingInviteId = messageId
         Task {
             let ok = await onlineVM.acceptGameInviteFromChat(
