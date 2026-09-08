@@ -21,7 +21,7 @@ struct HomeView: View {
             ScrollView {
                 VStack(spacing: 24) {
                     welcomeHeader
-                    if onlineVM.resumableGame != nil {
+                    if onlineVM.resumableGame != nil, FeatureFlags.multiplayerEnabled {
                         resumeGameBanner
                     }
                     dailyRewardBanner
