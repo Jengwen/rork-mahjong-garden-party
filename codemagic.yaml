@@ -1,21 +1,90 @@
+definitions:
+  # Shared pieces so the two workflows can't drift apart. Only the
+  # SWIFT_ACTIVE_COMPILATION_CONDITIONS differ between them.
+  signing: &signing
+    ios_signing:
+      # Reference names as shown in Codemagic > Settings > Code signing identities
+      provisioning_profiles:
+        - Mahjong Garden
+      certificates:
+        - Codemagic Distribution
+
+  common_vars: &common_vars
+    XCODE_PROJECT: "ios/MahjongGardenParty.xcodeproj"
+    XCODE_SCHEME: "MahjongGardenParty"
+    APP_STORE_APPLE_ID: 6793677304
+
+  # Each step is anchored INDIVIDUALLY (as a mapping, not a list). Aliasing a
+  # whole list into `scripts:` would nest a list inside a list, which Codemagic
+  # rejects — the steps must come out flat.
+  use_profiles: &use_profiles
+    name: Apply uploaded signing files to the Xcode project
+    script: |
+      xcode-project use-profiles
+
+  resolve_spm: &resolve_spm
+    name: Resolve Swift Package dependencies
+    script: |
+      xcodebuild -resolvePackageDependencies \
+        -project "$XCODE_PROJECT" \
+        -scheme "$XCODE_SCHEME"
+
+  build_ipa: &build_ipa
+    name: Build ipa for distribution
+    script: |
+      # 1. Get the highest build number already on TestFlight for this app.
+      #    Shared across BOTH workflows, so a release build and a beta build
+      #    can never collide on the same CFBundleVersion.
+      LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || echo "")
+      if [ -z "$LATEST" ]; then
+        # Fallback: epoch seconds are always increasing and unique.
+        BUILD_NUM=$(date +%s)
+      else
+        BUILD_NUM=$((LATEST + 1))
+      fi
+      echo "Latest on TestFlight: '$LATEST' -> building CFBundleVersion $BUILD_NUM"
+
+      # 2. Write the number straight into the project file so it always
+      #    takes effect (archive-xcargs overrides are unreliable with
+      #    GENERATE_INFOPLIST_FILE = YES).
+      sed -i '' "s/CURRENT_PROJECT_VERSION = [0-9]*;/CURRENT_PROJECT_VERSION = $BUILD_NUM;/g" \
+        "$XCODE_PROJECT/project.pbxproj"
+      echo "Confirming the change stuck:"
+      grep -m1 "CURRENT_PROJECT_VERSION" "$XCODE_PROJECT/project.pbxproj"
+
+      # 3. Archive & export.
+      #    SWIFT_CONDITIONS is set per-workflow. The release workflow leaves it
+      #    empty; the beta workflow adds MULTIPLAYER_BETA, which is what flips
+      #    FeatureFlags.multiplayerEnabled to true. Because the flag is a
+      #    compile-time #if, a release build physically cannot ship multiplayer
+      #    enabled — there is no runtime switch to get wrong.
+      xcode-project build-ipa \
+        --project "$XCODE_PROJECT" \
+        --scheme "$XCODE_SCHEME" \
+        --archive-xcargs "COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGN_STYLE=Manual SWIFT_ACTIVE_COMPILATION_CONDITIONS='\$(inherited) $SWIFT_CONDITIONS'"
+
+  artifacts: &artifacts
+    - build/ios/ipa/*.ipa
+    - /tmp/xcodebuild_logs/*.log
+
 workflows:
+
+  # ---------------------------------------------------------------------------
+  # RELEASE — what real users get. Multiplayer compiled OFF.
+  # Runs automatically on every push to main.
+  # ---------------------------------------------------------------------------
   ios-workflow:
-    name: Mahjong Garden Party - iOS
+    name: Mahjong Garden Party - iOS (Release)
     instance_type: mac_mini_m2
     max_build_duration: 60
     integrations:
-      app_store_connect: "Codemagic CI"   # used for uploading to TestFlight
+      app_store_connect: "Codemagic CI"
     environment:
-      ios_signing:
-        # Reference names as shown in Codemagic > Settings > Code signing identities
-        provisioning_profiles:
-          - Mahjong Garden
-        certificates:
-          - Codemagic Distribution
+      <<: *signing
       vars:
-        XCODE_PROJECT: "ios/MahjongGardenParty.xcodeproj"
-        XCODE_SCHEME: "MahjongGardenParty"
-        APP_STORE_APPLE_ID: 6793677304
+        <<: *common_vars
+        # No MULTIPLAYER_BETA — FeatureFlags.multiplayerEnabled stays false.
+        SWIFT_CONDITIONS: ""
       xcode: latest
     triggering:
       events:
@@ -25,48 +94,42 @@ workflows:
           include: true
           source: true
     scripts:
-      - name: Apply uploaded signing files to the Xcode project
-        script: |
-          xcode-project use-profiles
+      - *use_profiles
+      - *resolve_spm
+      - *build_ipa
+    artifacts: *artifacts
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        submit_to_app_store: false
 
-      - name: Resolve Swift Package dependencies
-        script: |
-          xcodebuild -resolvePackageDependencies \
-            -project "$XCODE_PROJECT" \
-            -scheme "$XCODE_SCHEME"
-
-      - name: Build ipa for distribution
-        script: |
-          # 1. Get the highest build number already on TestFlight for this app.
-          #    (Not the App Store number — the app hasn't been released there,
-          #    so that query returns a stale value.)
-          LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || echo "")
-          if [ -z "$LATEST" ]; then
-            # Fallback: epoch seconds are always increasing and unique.
-            BUILD_NUM=$(date +%s)
-          else
-            BUILD_NUM=$((LATEST + 1))
-          fi
-          echo "Latest on TestFlight: '$LATEST' -> building CFBundleVersion $BUILD_NUM"
-
-          # 2. Write the number straight into the project file so it always
-          #    takes effect (archive-xcargs overrides are unreliable with
-          #    GENERATE_INFOPLIST_FILE = YES).
-          sed -i '' "s/CURRENT_PROJECT_VERSION = [0-9]*;/CURRENT_PROJECT_VERSION = $BUILD_NUM;/g" \
-            "$XCODE_PROJECT/project.pbxproj"
-          echo "Confirming the change stuck:"
-          grep -m1 "CURRENT_PROJECT_VERSION" "$XCODE_PROJECT/project.pbxproj"
-
-          # 3. Archive & export.
-          xcode-project build-ipa \
-            --project "$XCODE_PROJECT" \
-            --scheme "$XCODE_SCHEME" \
-            --archive-xcargs "COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGN_STYLE=Manual"
-
-    artifacts:
-      - build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
-
+  # ---------------------------------------------------------------------------
+  # MULTIPLAYER BETA — same commit, multiplayer compiled ON.
+  # Manual trigger only: run it from the Codemagic UI when you want a build to
+  # test multiplayer with. Never submit these to App Store review.
+  # ---------------------------------------------------------------------------
+  ios-multiplayer-beta:
+    name: Mahjong Garden Party - iOS (Multiplayer Beta)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations:
+      app_store_connect: "Codemagic CI"
+    environment:
+      <<: *signing
+      vars:
+        <<: *common_vars
+        # This is the whole difference: defines MULTIPLAYER_BETA, so the #if in
+        # FeatureFlags.swift compiles multiplayerEnabled = true.
+        SWIFT_CONDITIONS: "MULTIPLAYER_BETA"
+      xcode: latest
+    # No `triggering:` block — this workflow only runs when you start it manually
+    # from the Codemagic dashboard. That keeps every automatic build a release build.
+    scripts:
+      - *use_profiles
+      - *resolve_spm
+      - *build_ipa
+    artifacts: *artifacts
     publishing:
       app_store_connect:
         auth: integration
