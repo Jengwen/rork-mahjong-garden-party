@@ -5,6 +5,8 @@ struct ProfileView: View {
     @Environment(ThemeManager.self) private var themeManager
     @State private var showEditProfile: Bool = false
     @State private var showPasswordResetAlert: Bool = false
+    @State private var showDeleteAccountSheet: Bool = false
+    @State private var showDeleteAccountErrorAlert: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -64,6 +66,17 @@ struct ProfileView: View {
             }
             .onChange(of: appViewModel.passwordResetError) { _, newValue in
                 if newValue != nil { showPasswordResetAlert = true }
+            }
+            .sheet(isPresented: $showDeleteAccountSheet) {
+                DeleteAccountSheet()
+            }
+            .alert("Couldn't Delete Account", isPresented: $showDeleteAccountErrorAlert) {
+                Button("OK") { appViewModel.accountDeletionError = nil }
+            } message: {
+                Text(appViewModel.accountDeletionError ?? "Something went wrong. Please try again.")
+            }
+            .onChange(of: appViewModel.accountDeletionError) { _, newValue in
+                if newValue != nil { showDeleteAccountErrorAlert = true }
             }
         }
     }
@@ -256,6 +269,19 @@ struct ProfileView: View {
                 .foregroundStyle(.red)
                 .clipShape(.rect(cornerRadius: 14))
             }
+
+            Button(role: .destructive) {
+                showDeleteAccountSheet = true
+            } label: {
+                HStack {
+                    Image(systemName: "trash.fill")
+                    Text("Delete Account")
+                        .fontWeight(.semibold)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .foregroundStyle(.red)
+            }
         }
     }
 
@@ -427,6 +453,73 @@ struct SettingsRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+}
+
+struct DeleteAccountSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppViewModel.self) private var appViewModel
+    @State private var confirmationText: String = ""
+
+    private var canDelete: Bool {
+        confirmationText.uppercased() == "DELETE" && !appViewModel.isDeletingAccount
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("This can't be undone", systemImage: "exclamationmark.triangle.fill")
+                            .font(.headline)
+                            .foregroundStyle(.red)
+                        Text("Deleting your account permanently removes your profile, level and XP, game stats, achievements, friends list, messages, and multiplayer game history. This cannot be recovered.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section("Type DELETE to confirm") {
+                    TextField("DELETE", text: $confirmationText)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .disabled(appViewModel.isDeletingAccount)
+                }
+
+                Section {
+                    Button(role: .destructive) {
+                        Task {
+                            await appViewModel.deleteAccount()
+                            if appViewModel.accountDeletionError == nil {
+                                dismiss()
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if appViewModel.isDeletingAccount {
+                                ProgressView()
+                            } else {
+                                Text("Permanently Delete Account")
+                                    .fontWeight(.semibold)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(!canDelete)
+                }
+            }
+            .navigationTitle("Delete Account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(appViewModel.isDeletingAccount)
+                }
+            }
+            .interactiveDismissDisabled(appViewModel.isDeletingAccount)
+        }
     }
 }
 
