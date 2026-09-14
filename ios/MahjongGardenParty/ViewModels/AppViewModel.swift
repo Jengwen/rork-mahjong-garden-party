@@ -14,6 +14,8 @@ class AppViewModel {
     var syncError: String?
     var passwordResetSent: Bool = false
     var passwordResetError: String?
+    var isDeletingAccount: Bool = false
+    var accountDeletionError: String?
     /// Set true when the app is opened via a password-reset deep link,
     /// which presents the "set new password" screen over everything.
     var showSetNewPassword: Bool = false
@@ -285,6 +287,37 @@ class AppViewModel {
         } catch {
             print("⚠️ Sign out failed: \(error)")
         }
+    }
+
+    /// Permanently deletes the signed-in user's account: server-side data via
+    /// the `delete-account` edge function, then every locally cached copy of
+    /// it. Irreversible — the caller (ProfileView) is responsible for
+    /// confirming with the user before invoking this.
+    func deleteAccount() async {
+        isDeletingAccount = true
+        accountDeletionError = nil
+        do {
+            try await supabase.deleteAccount()
+
+            // Server-side data is gone; clear everything cached on-device too
+            // so no stale profile/matches/achievements survive the deleted
+            // account (signOut() intentionally keeps these for a quick
+            // re-login, but there is no account left to log back into here).
+            UserDefaults.standard.removeObject(forKey: Self.profileKey)
+            UserDefaults.standard.removeObject(forKey: Self.matchesKey)
+            UserDefaults.standard.removeObject(forKey: Self.achievementsKey)
+            UserDefaults.standard.removeObject(forKey: Self.dailyRewardKey)
+
+            isAuthenticated = false
+            playerProfile = PlayerProfile()
+            recentMatches = []
+            dailyRewardTracker = DailyRewardTracker()
+            syncError = nil
+            databaseStatus = nil
+        } catch {
+            accountDeletionError = error.localizedDescription
+        }
+        isDeletingAccount = false
     }
 
     func sendPasswordReset() async {

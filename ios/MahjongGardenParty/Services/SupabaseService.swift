@@ -95,6 +95,21 @@ class SupabaseService {
         )
     }
 
+    /// Permanently deletes the current user's account and all associated data
+    /// (profile, game history, friendships, messages, multiplayer seats, push
+    /// tokens). Runs server-side via the `delete-account` edge function since
+    /// only the service-role key can remove an auth.users row — the client
+    /// never holds that key. `invoke` attaches the caller's own session token,
+    /// so the function always deletes the signed-in user and nothing else.
+    /// On success, clears the local session state the same way `signOut` does.
+    func deleteAccount() async throws {
+        try await client.functions.invoke("delete-account")
+        try? await client.auth.signOut()
+        currentUserId = nil
+        isAuthenticated = false
+        knownMissingTables = []
+    }
+
     /// Called when the app is opened via the password-reset email link.
     /// Establishes the recovery session from the URL so updatePassword can run.
     func handlePasswordResetURL(_ url: URL) async throws {
