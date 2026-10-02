@@ -30,6 +30,7 @@ struct AuthView: View {
                     }
                     actionButton
                     toggleSection
+                    legalSection
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 60)
@@ -147,6 +148,34 @@ struct AuthView: View {
             }
             .font(.subheadline)
         }
+    }
+
+    /// EULA + privacy links on the sign-in / sign-up screen.
+    ///
+    /// Apple expects the licence terms and privacy policy to be reachable where
+    /// the account is created, not only from the paywall — an app that collects
+    /// a sign-up and sells a subscription has to surface both before the user
+    /// commits. Same destinations as the paywall footer so there is exactly one
+    /// set of terms in the app.
+    ///
+    /// The lead-in line is phrased as acceptance-by-signing-up, which is what
+    /// makes the links do their job rather than sit there as decoration.
+    private var legalSection: some View {
+        VStack(spacing: 8) {
+            Text("By continuing, you agree to our Terms of Use (EULA) and Privacy Policy.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            HStack(spacing: 16) {
+                Link("Terms of Use (EULA)",
+                     destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
+                Link("Privacy Policy",
+                     destination: URL(string: "https://mahjonggardenparty.com/privacy.html")!)
+            }
+            .font(.caption2)
+        }
+        .padding(.top, 4)
     }
 
     private var gardenBackground: some View {
