@@ -15,7 +15,22 @@ struct ConversationView: View {
     @State private var acceptingInviteId: String?
     @State private var showMultiplayerComingSoon: Bool = false
     @State private var messageToDelete: DirectMessage?
+    /// Non-nil while the report sheet is up. Carries the content snapshot so the
+    /// report survives the sender deleting the message.
+    @State private var reportTarget: ReportTarget?
+    /// Non-nil while the block confirmation is up.
+    @State private var userToBlock: FriendProfile?
     @FocusState private var isInputFocused: Bool
+
+    /// What the report sheet is reporting. Identifiable so it can drive
+    /// `.sheet(item:)` — the content id doubles as a stable identity.
+    struct ReportTarget: Identifiable {
+        let userId: String
+        let displayName: String
+        let contentId: String?
+        let snapshot: String?
+        var id: String { contentId ?? userId }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,6 +67,40 @@ struct ConversationView: View {
         }
         .navigationDestination(isPresented: $showLobby) {
             GameLobbyView(onlineVM: onlineVM, gameViewModel: gameViewModel)
+        }
+        .sheet(item: $reportTarget) { target in
+            ReportContentView(
+                socialVM: socialVM,
+                reportedUserId: target.userId,
+                reportedDisplayName: target.displayName,
+                contentKind: .message,
+                contentId: target.contentId,
+                contentSnapshot: target.snapshot
+            )
+            .environment(themeManager)
+        }
+        .alert(
+            "Block \(userToBlock?.displayName ?? "this player")?",
+            isPresented: Binding(
+                get: { userToBlock != nil },
+                set: { if !$0 { userToBlock = nil } }
+            )
+        ) {
+            Button("Block", role: .destructive) {
+                if let target = userToBlock {
+                    Task {
+                        await socialVM.blockUser(target.id)
+                        // The conversation we're standing in belongs to someone
+                        // we just blocked — leave it rather than sitting on a
+                        // screen that will never receive another message.
+                        dismiss()
+                    }
+                }
+                userToBlock = nil
+            }
+            Button("Cancel", role: .cancel) { userToBlock = nil }
+        } message: {
+            Text("They won't be able to message you, and you won't see their messages or profile. You can unblock them later in Settings.")
         }
         .alert(FeatureFlags.multiplayerComingSoonTitle, isPresented: $showMultiplayerComingSoon) {
             Button("OK", role: .cancel) {}
@@ -201,6 +250,27 @@ struct ConversationView: View {
                                             messageToDelete = row.message
                                         } label: {
                                             Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                                    // Report / block are offered on OTHER people's
+                                    // messages only — reporting yourself is noise,
+                                    // and the DB has a check constraint against it.
+                                    if !isMe {
+                                        Divider()
+                                        Button {
+                                            reportTarget = ReportTarget(
+                                                userId: row.message.senderId,
+                                                displayName: friend.profile.displayName,
+                                                contentId: row.message.id,
+                                                snapshot: row.message.content
+                                            )
+                                        } label: {
+                                            Label("Report Message", systemImage: "flag")
+                                        }
+                                        Button(role: .destructive) {
+                                            userToBlock = friend.profile
+                                        } label: {
+                                            Label("Block \(friend.profile.displayName)", systemImage: "hand.raised")
                                         }
                                     }
                                 }

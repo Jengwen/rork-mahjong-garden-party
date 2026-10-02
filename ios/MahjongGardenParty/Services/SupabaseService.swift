@@ -493,6 +493,115 @@ class SupabaseService {
         }
     }
 
+    // MARK: - Moderation (blocking & reporting)
+    //
+    // App Store Guideline 1.2 requires that an app with user-generated content
+    // let people report objectionable content and block abusive users. The DB
+    // side lives in 20261001_moderation_blocking_and_reporting.sql, which also
+    // enforces the block at the `messages` INSERT policy — client filtering is
+    // the experience, but the policy is what actually stops contact.
+
+    /// Block a user. Idempotent: re-blocking someone already blocked is a no-op
+    /// rather than an error, so the UI never has to special-case it.
+    func blockUser(_ userId: String) async throws {
+        guard let myId = currentUserId else { throw DatabaseError.notAuthenticated }
+        let me = myId.uuidString.lowercased()
+        let them = userId.lowercased()
+        guard me != them else { return }
+
+        nonisolated struct BlockInsert: Codable, Sendable {
+            let blockerId: String
+            let blockedId: String
+            enum CodingKeys: String, CodingKey {
+                case blockerId = "blocker_id"
+                case blockedId = "blocked_id"
+            }
+        }
+        try await client
+            .from("blocked_users")
+            .upsert(BlockInsert(blockerId: me, blockedId: them))
+            .execute()
+    }
+
+    func unblockUser(_ userId: String) async throws {
+        guard let myId = currentUserId else { throw DatabaseError.notAuthenticated }
+        try await client
+            .from("blocked_users")
+            .delete()
+            .eq("blocker_id", value: myId.uuidString.lowercased())
+            .eq("blocked_id", value: userId.lowercased())
+            .execute()
+    }
+
+    /// Everyone this user has blocked. Loaded once per social refresh and used
+    /// to filter friends, conversations, messages and search results.
+    func fetchBlockedUserIds() async throws -> Set<String> {
+        guard let myId = currentUserId else { return [] }
+        nonisolated struct BlockRow: Codable, Sendable {
+            let blockedId: String
+            enum CodingKeys: String, CodingKey { case blockedId = "blocked_id" }
+        }
+        do {
+            let rows: [BlockRow] = try await client
+                .from("blocked_users")
+                .select("blocked_id")
+                .eq("blocker_id", value: myId.uuidString.lowercased())
+                .execute()
+                .value
+            return Set(rows.map { $0.blockedId.lowercased() })
+        } catch {
+            // A missing table (migration not yet applied) must not break the
+            // social tab — degrade to "nobody blocked" rather than throwing.
+            markTableMissingIfNeeded("blocked_users", error: error)
+            return []
+        }
+    }
+
+    /// File a report. `contentSnapshot` is a verbatim copy of the offending
+    /// content: the reported user can delete the message moments later, and a
+    /// report with no evidence cannot be acted on.
+    func submitReport(
+        reportedUserId: String,
+        contentType: String,
+        contentId: String?,
+        contentSnapshot: String?,
+        reason: String,
+        details: String?
+    ) async throws {
+        guard let myId = currentUserId else { throw DatabaseError.notAuthenticated }
+        nonisolated struct ReportInsert: Codable, Sendable {
+            let reporterId: String
+            let reportedUserId: String
+            let contentType: String
+            let contentId: String?
+            let contentSnapshot: String?
+            let reason: String
+            let details: String?
+            enum CodingKeys: String, CodingKey {
+                case reporterId = "reporter_id"
+                case reportedUserId = "reported_user_id"
+                case contentType = "content_type"
+                case contentId = "content_id"
+                case contentSnapshot = "content_snapshot"
+                case reason
+                case details
+            }
+        }
+        try await client
+            .from("content_reports")
+            .insert(ReportInsert(
+                reporterId: myId.uuidString.lowercased(),
+                reportedUserId: reportedUserId.lowercased(),
+                contentType: contentType,
+                contentId: contentId,
+                // Cap the snapshot so a pathological payload can't bloat the row.
+                contentSnapshot: contentSnapshot.map { String($0.prefix(2000)) },
+                reason: reason,
+                details: details
+            ))
+            .execute()
+    }
+
     func markMessagesAsRead(from senderId: String) async throws {
         guard let userId = currentUserId else { return }
         do {

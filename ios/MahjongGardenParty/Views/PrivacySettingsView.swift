@@ -18,6 +18,23 @@ struct PrivacySettingsView: View {
             }
 
             Section {
+                NavigationLink {
+                    BlockedUsersView()
+                } label: {
+                    HStack {
+                        Text("Blocked Players")
+                        Spacer()
+                        Image(systemName: "hand.raised")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Safety")
+            } footer: {
+                Text("Review who you've blocked, or unblock someone. You can report or block a player from the Social tab or from any message they've sent you.")
+            }
+
+            Section {
                 Button {
                     clearGameCache()
                 } label: {
