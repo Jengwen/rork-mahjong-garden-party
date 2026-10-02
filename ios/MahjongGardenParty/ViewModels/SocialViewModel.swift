@@ -35,6 +35,102 @@ class SocialViewModel {
         }
     }
 
+    // MARK: - Moderation (App Store Guideline 1.2)
+
+    /// Everyone this user has blocked, lowercased. Refreshed alongside friends.
+    /// Kept in memory because it filters several lists on every render; the
+    /// server copy in `blocked_users` is the source of truth.
+    private(set) var blockedUserIds: Set<String> = []
+
+    /// Profiles for the blocked set, for the management screen. Loaded lazily —
+    /// the common case is an empty block list, which should cost nothing.
+    private(set) var blockedProfiles: [FriendProfile] = []
+
+    func isBlocked(_ userId: String) -> Bool {
+        blockedUserIds.contains(userId.lowercased())
+    }
+
+    private func filterBlocked(_ messages: [DirectMessage]) -> [DirectMessage] {
+        guard !blockedUserIds.isEmpty else { return messages }
+        return messages.filter { !blockedUserIds.contains($0.senderId.lowercased()) }
+    }
+
+    func refreshBlockedUsers() async {
+        blockedUserIds = (try? await supabase.fetchBlockedUserIds()) ?? []
+    }
+
+    /// Block a user and drop them from every list immediately, so the UI
+    /// responds at once rather than waiting for the next refresh.
+    func blockUser(_ userId: String) async {
+        do {
+            try await supabase.blockUser(userId)
+            let key = userId.lowercased()
+            blockedUserIds.insert(key)
+            friends.removeAll { $0.profile.id.lowercased() == key }
+            pendingRequests.removeAll { $0.profile.id.lowercased() == key }
+            searchResults.removeAll { $0.id.lowercased() == key }
+            conversations.removeAll { $0.friend.id.lowercased() == key }
+            currentMessages = filterBlocked(currentMessages)
+        } catch {
+            errorMessage = "Couldn't block this user: \(error.localizedDescription)"
+            print("⚠️ blockUser: \(error)")
+        }
+    }
+
+    func unblockUser(_ userId: String) async {
+        do {
+            try await supabase.unblockUser(userId)
+            let key = userId.lowercased()
+            blockedUserIds.remove(key)
+            blockedProfiles.removeAll { $0.id.lowercased() == key }
+            await loadFriends()
+        } catch {
+            errorMessage = "Couldn't unblock this user: \(error.localizedDescription)"
+            print("⚠️ unblockUser: \(error)")
+        }
+    }
+
+    func loadBlockedProfiles() async {
+        await refreshBlockedUsers()
+        var loaded: [FriendProfile] = []
+        for id in blockedUserIds {
+            if let profile = try? await supabase.fetchFriendProfile(userId: id) {
+                loaded.append(profile)
+            }
+        }
+        blockedProfiles = loaded.sorted { $0.displayName < $1.displayName }
+    }
+
+    /// File a report. Returns true on success so the view can show confirmation.
+    /// Reporting deliberately does NOT auto-block — Apple wants both mechanisms,
+    /// and someone may want to flag a one-off message without cutting ties. The
+    /// UI offers blocking as a follow-up instead.
+    @discardableResult
+    func reportContent(
+        reportedUserId: String,
+        contentType: String,
+        contentId: String?,
+        contentSnapshot: String?,
+        reason: String,
+        details: String? = nil
+    ) async -> Bool {
+        do {
+            try await supabase.submitReport(
+                reportedUserId: reportedUserId,
+                contentType: contentType,
+                contentId: contentId,
+                contentSnapshot: contentSnapshot,
+                reason: reason,
+                details: details
+            )
+            return true
+        } catch {
+            errorMessage = "Couldn't submit the report: \(error.localizedDescription)"
+            print("⚠️ reportContent: \(error)")
+            return false
+        }
+    }
+
     var currentUserId: String? {
         supabase.currentUserId?.uuidString.lowercased()
     }
@@ -49,6 +145,10 @@ class SocialViewModel {
         defer { isLoading = false }
 
         do {
+            // Load the block list first — everything below is filtered against
+            // it, so a blocked user never materialises in the UI at all.
+            await refreshBlockedUsers()
+
             let friendships = try await supabase.fetchFriendships()
             guard let myId = currentUserId else { return }
 
@@ -57,6 +157,7 @@ class SocialViewModel {
 
             for friendship in friendships {
                 let otherUserId = friendship.userId == myId ? friendship.friendId : friendship.userId
+                guard !isBlocked(otherUserId) else { continue }
                 guard let profile = try await supabase.fetchFriendProfile(userId: otherUserId) else { continue }
 
                 let item = FriendWithProfile(
@@ -102,7 +203,13 @@ class SocialViewModel {
             searchResults = try await supabase.searchPlayers(query: searchQuery)
             let friendIds = Set(friends.map(\.profile.id))
             let pendingIds = Set(pendingRequests.map(\.profile.id))
-            searchResults = searchResults.filter { !friendIds.contains($0.id) && !pendingIds.contains($0.id) }
+            searchResults = searchResults.filter {
+                !friendIds.contains($0.id)
+                    && !pendingIds.contains($0.id)
+                    // A blocked user must not be findable again by search —
+                    // otherwise blocking is trivially undone by looking them up.
+                    && !isBlocked($0.id)
+            }
         } catch {
             errorMessage = "Search failed: \(error.localizedDescription)"
             print("⚠️ searchPlayers: \(error)")
@@ -149,7 +256,7 @@ class SocialViewModel {
     func loadMessages(with friendId: String) async {
         do {
             let fetched = try await supabase.fetchMessages(with: friendId)
-            currentMessages = filterHidden(fetched)
+            currentMessages = filterBlocked(filterHidden(fetched))
             try await supabase.markMessagesAsRead(from: friendId)
         } catch let error as DatabaseError {
             tableMissing = true
@@ -165,7 +272,7 @@ class SocialViewModel {
         do {
             try await supabase.sendMessage(to: friendId, content: content)
             let fetched = try await supabase.fetchMessages(with: friendId)
-            currentMessages = filterHidden(fetched)
+            currentMessages = filterBlocked(filterHidden(fetched))
         } catch let error as DatabaseError {
             tableMissing = true
             errorMessage = error.localizedDescription
@@ -193,7 +300,7 @@ class SocialViewModel {
     func refreshMessages(with friendId: String) async {
         do {
             let fetched = try await supabase.fetchMessages(with: friendId)
-            currentMessages = filterHidden(fetched)
+            currentMessages = filterBlocked(filterHidden(fetched))
             try await supabase.markMessagesAsRead(from: friendId)
         } catch {
             print("⚠️ refreshMessages: \(error)")

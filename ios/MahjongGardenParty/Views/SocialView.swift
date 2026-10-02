@@ -7,6 +7,10 @@ struct SocialView: View {
     @State private var selectedSection: SocialSection = .friends
     @State private var showAddFriend: Bool = false
     @State private var selectedFriend: FriendWithProfile?
+    /// Moderation (App Store Guideline 1.2). Non-nil while the corresponding
+    /// report sheet / block confirmation is showing.
+    @State private var reportTarget: FriendProfile?
+    @State private var userToBlock: FriendProfile?
 
     var body: some View {
         NavigationStack {
@@ -18,6 +22,36 @@ struct SocialView: View {
                 }
             }
             .background(Color.white.ignoresSafeArea())
+            .sheet(item: $reportTarget) { profile in
+                ReportContentView(
+                    socialVM: socialVM,
+                    reportedUserId: profile.id,
+                    reportedDisplayName: profile.displayName,
+                    // Reporting from a player row is about the person and their
+                    // profile (name/avatar), not one specific message.
+                    contentKind: .displayName,
+                    contentId: nil,
+                    contentSnapshot: profile.displayName
+                )
+                .environment(themeManager)
+            }
+            .alert(
+                "Block \(userToBlock?.displayName ?? "this player")?",
+                isPresented: Binding(
+                    get: { userToBlock != nil },
+                    set: { if !$0 { userToBlock = nil } }
+                )
+            ) {
+                Button("Block", role: .destructive) {
+                    if let target = userToBlock {
+                        Task { await socialVM.blockUser(target.id) }
+                    }
+                    userToBlock = nil
+                }
+                Button("Cancel", role: .cancel) { userToBlock = nil }
+            } message: {
+                Text("They won't be able to message you, and you won't see their messages or profile. You can unblock them later in Settings.")
+            }
             .navigationTitle("Social")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -315,6 +349,13 @@ struct SocialView: View {
                 LazyVStack(spacing: 10) {
                     ForEach(socialVM.friends) { friend in
                         FriendCardRow(friend: friend, socialVM: socialVM)
+                            .contextMenu {
+                                ReportContentView.playerContextMenu(
+                                    profile: friend.profile,
+                                    onReport: { reportTarget = friend.profile },
+                                    onBlock: { userToBlock = friend.profile }
+                                )
+                            }
                     }
                 }
                 .padding()
@@ -377,6 +418,13 @@ struct SocialView: View {
                             MessagePreviewRow(friend: friend)
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            ReportContentView.playerContextMenu(
+                                profile: friend.profile,
+                                onReport: { reportTarget = friend.profile },
+                                onBlock: { userToBlock = friend.profile }
+                            )
+                        }
                     }
                 }
                 .padding()
@@ -409,6 +457,13 @@ struct SocialView: View {
                 LazyVStack(spacing: 10) {
                     ForEach(socialVM.pendingRequests) { request in
                         FriendRequestRow(request: request, socialVM: socialVM)
+                            .contextMenu {
+                                ReportContentView.playerContextMenu(
+                                    profile: request.profile,
+                                    onReport: { reportTarget = request.profile },
+                                    onBlock: { userToBlock = request.profile }
+                                )
+                            }
                     }
                 }
                 .padding()
