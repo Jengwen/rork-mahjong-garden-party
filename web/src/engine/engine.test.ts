@@ -87,25 +87,14 @@ describe('card data', () => {
     expect(CARDS['2026'].hands.length).toBe(92);
   });
 
-  // KNOWN DATA BUGS inherited from ios/.../NMJLCard2025.swift: these hands don't
-  // total 14 tiles, so nobody can ever win with them (on iOS or web). Pinned here
-  // so the list can only shrink; fix the Swift source and re-run convert-card.py.
-  const KNOWN_BAD = new Set([
-    'wd_1a', 'wd_7a',
-    ...[1, 2, 3, 4, 5, 6, 7].map((n) => `2026_quint_2_${n}`),
-  ]);
-
-  it('every hand on both cards totals 14 tiles (except known iOS data bugs)', () => {
-    const bad: string[] = [];
+  it('every hand on both cards totals 14 tiles', () => {
     for (const card of Object.values(CARDS)) for (const h of card.hands) {
-      if (h.groups.reduce((s, g) => s + g.count, 0) !== 14) bad.push(h.id);
+      expect(h.groups.reduce((s, g) => s + g.count, 0), h.id).toBe(14);
     }
-    for (const id of bad) expect(KNOWN_BAD.has(id), `new malformed hand ${id}`).toBe(true);
   });
 
   it('every hand is satisfiable and recognised by checkWin', () => {
     for (const card of Object.values(CARDS)) for (const h of card.hands) {
-      if (KNOWN_BAD.has(h.id)) continue;
       const tiles = tilesForHand(h);
       expect(tiles, `no concrete tiles for ${h.id}`).not.toBeNull();
       expect(checkWin(tiles!, [], card), h.id).not.toBeNull();
