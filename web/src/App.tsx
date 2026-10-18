@@ -10,6 +10,7 @@ import { AuthScreen, ResetPasswordScreen } from './screens/AuthScreen';
 import { GameScreen } from './screens/GameScreen';
 import type { FinishedGame } from './screens/GameScreen';
 import { HomeScreen } from './screens/HomeScreen';
+import { ProfileScreen } from './screens/ProfileScreen';
 
 function readCheckoutParam(): 'success' | 'cancel' | null {
   const v = new URLSearchParams(window.location.search).get('checkout');
@@ -25,6 +26,7 @@ function readCheckoutParam(): 'success' | 'cancel' | null {
 // this branch is removed entirely from the deployed bundle.
 function PreviewApp() {
   const [playing, setPlaying] = useState<CardYear | null>(null);
+  const [showProfile, setShowProfile] = useState(() => new URLSearchParams(window.location.search).has('profile'));
   const [profile, setProfile] = useState<Profile>({
     user_id: 'preview', display_name: 'Jennifer', avatar_image: 'daffodil', email: 'preview@example.com',
     level: 4, xp: 820, total_wins: 23, total_games: 61, current_streak: 2, selected_theme_id: 'garden_party',
@@ -34,8 +36,9 @@ function PreviewApp() {
   const locked = new URLSearchParams(window.location.search).has('locked');
   const access: Access = { active: !locked, entitlements: locked ? [] : [{ source: 'app_store', product_id: 'mgg_annual', status: 'active', expires_at: null, will_renew: true }] };
   if (new URLSearchParams(window.location.search).has('auth')) return <AuthScreen />;
+  if (showProfile) return <ProfileScreen profile={profile} access={access} onProfile={setProfile} onBack={() => setShowProfile(false)} preview />;
   if (playing) return <GameScreen playerName={profile.display_name} avatar={profile.avatar_image} cardYear={playing} settings={profile.settings_data} onFinished={() => {}} onExit={() => setPlaying(null)} speed={Number(new URLSearchParams(window.location.search).get('speed') ?? 1)} />;
-  return <HomeScreen profile={profile} access={access} onProfile={setProfile} onRefreshAccess={async () => {}} onPlay={setPlaying} checkoutReturn={null} />;
+  return <HomeScreen profile={profile} access={access} onProfile={setProfile} onRefreshAccess={async () => {}} onPlay={setPlaying} onOpenProfile={() => setShowProfile(true)} checkoutReturn={null} />;
 }
 
 export default function App() {
@@ -50,6 +53,7 @@ function RealApp() {
   const [access, setAccess] = useState<Access>({ active: false, entitlements: [] });
   const [loadError, setLoadError] = useState<string | null>(null);
   const [playing, setPlaying] = useState<CardYear | null>(null);
+  const [showProfile, setShowProfile] = useState(false);
   const [checkoutReturn] = useState(readCheckoutParam);
 
   useEffect(() => {
@@ -84,7 +88,7 @@ function RealApp() {
   }, [session, refreshAccess]);
 
   useEffect(() => {
-    if (!userId) { setProfile(null); setPlaying(null); return; }
+    if (!userId) { setProfile(null); setPlaying(null); setShowProfile(false); return; }
     loadUser();
   }, [userId, loadUser]);
 
@@ -135,6 +139,10 @@ function RealApp() {
     );
   }
 
+  if (showProfile) {
+    return <ProfileScreen profile={profile} access={access} onProfile={setProfile} onBack={() => setShowProfile(false)} />;
+  }
+
   return (
     <HomeScreen
       profile={profile}
@@ -142,6 +150,7 @@ function RealApp() {
       onProfile={setProfile}
       onRefreshAccess={refreshAccess}
       onPlay={setPlaying}
+      onOpenProfile={() => setShowProfile(true)}
       checkoutReturn={checkoutReturn}
     />
   );

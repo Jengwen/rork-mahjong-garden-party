@@ -7,11 +7,10 @@ import type { CardYear } from '../engine/types';
 import type { Access } from '../lib/entitlements';
 import { openBillingPortal } from '../lib/entitlements';
 import { fetchRecentResults, updateProfile, xpForNextLevel } from '../lib/profile';
+import { PRIVACY_POLICY_URL } from '../lib/links';
 import type { GameResultRow, Profile } from '../lib/profile';
 import { supabase } from '../lib/supabase';
 import { Paywall } from './Paywall';
-
-const AVATARS = ['daffodil', 'daylily', 'dogwood', 'hydrangea', 'lily', 'pdaisy', 'peony', 'pink_flower', 'pink_rose', 'tulip'];
 
 interface Props {
   profile: Profile;
@@ -19,6 +18,7 @@ interface Props {
   onProfile: (p: Profile) => void;
   onRefreshAccess: () => Promise<void>;
   onPlay: (year: CardYear) => void;
+  onOpenProfile: () => void;
   checkoutReturn: 'success' | 'cancel' | null;
 }
 
@@ -30,15 +30,11 @@ function timeAgo(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-export function HomeScreen({ profile, access, onProfile, onRefreshAccess, onPlay, checkoutReturn }: Props) {
+export function HomeScreen({ profile, access, onProfile, onRefreshAccess, onPlay, onOpenProfile, checkoutReturn }: Props) {
   const [year, setYear] = useState<CardYear>(() => (localStorageGet('mgp_card_year') as CardYear) || '2026');
   const [results, setResults] = useState<GameResultRow[] | null>(null);
   const [paywall, setPaywall] = useState(false);
   const [showCard, setShowCard] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(profile.display_name);
-  const [avatar, setAvatar] = useState(profile.avatar_image);
-  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     fetchRecentResults(profile.user_id, 10).then(setResults).catch(() => setResults([]));
@@ -58,20 +54,13 @@ export function HomeScreen({ profile, access, onProfile, onRefreshAccess, onPlay
     try { onProfile(await updateProfile(profile.user_id, { settings: { [key]: next } })); } catch { /* keep optimistic */ }
   }
 
-  async function saveProfile() {
-    setSaving(true);
-    try {
-      onProfile(await updateProfile(profile.user_id, { display_name: name.trim() || profile.display_name, avatar_image: avatar }));
-      setEditing(false);
-    } finally { setSaving(false); }
-  }
-
   return (
     <div className="page garden-bg">
       <header className="topbar">
         <div className="brand"><img src="/icon-192.png" alt="" />Mahjong Garden Party</div>
         <div className="spacer" />
         <button className="btn btn-quiet btn-sm" onClick={() => setShowCard(true)}>NMJL card</button>
+        <button className="btn btn-quiet btn-sm" onClick={onOpenProfile}>Account</button>
         <button className="btn btn-ghost btn-sm" onClick={() => supabase.auth.signOut()}>Sign out</button>
       </header>
 
@@ -87,7 +76,7 @@ export function HomeScreen({ profile, access, onProfile, onRefreshAccess, onPlay
                 <span>{profile.xp} / {xpForNextLevel(profile.level)} XP</span>
               </div>
             </div>
-            <button className="btn btn-quiet btn-sm" onClick={() => { setName(profile.display_name); setAvatar(profile.avatar_image); setEditing(true); }}>Edit</button>
+            <button className="btn btn-ghost btn-sm" onClick={onOpenProfile}>Profile</button>
           </section>
 
           <section className="stats" aria-label="Your stats">
@@ -159,26 +148,14 @@ export function HomeScreen({ profile, access, onProfile, onRefreshAccess, onPlay
           </div>
         </aside>
       </main>
+      <footer className="site-footer">
+        <a href={PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+        <span aria-hidden>·</span>
+        <button className="linkish" onClick={onOpenProfile}>Profile &amp; Account</button>
+      </footer>
 
       {paywall && <Paywall access={access} onClose={() => setPaywall(false)} onRefresh={onRefreshAccess} checkoutReturn={checkoutReturn} />}
       {showCard && <Modal title={`NMJL ${year} card`} wide onClose={() => setShowCard(false)}><CardReference year={year} /></Modal>}
-      {editing && (
-        <Modal title="Your profile" onClose={() => setEditing(false)}>
-          <div className="field"><label htmlFor="dn">Display name</label><input id="dn" className="input" value={name} maxLength={24} onChange={(e) => setName(e.target.value)} /></div>
-          <div className="field">
-            <label>Avatar</label>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-              {AVATARS.map((a) => (
-                <button key={a} onClick={() => setAvatar(a)} aria-label={a} aria-pressed={avatar === a}
-                  style={{ border: 'none', padding: 2, borderRadius: '50%', cursor: 'pointer', background: avatar === a ? 'var(--teal)' : 'transparent' }}>
-                  <Avatar name={a} size={52} />
-                </button>
-              ))}
-            </div>
-          </div>
-          <button className="btn btn-primary" disabled={saving} onClick={saveProfile}>{saving ? 'Saving…' : 'Save'}</button>
-        </Modal>
-      )}
     </div>
   );
 }

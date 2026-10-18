@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { WEB_RESET_REDIRECT, supabase } from '../lib/supabase';
 import { ensureProfile } from '../lib/profile';
+import { PRIVACY_POLICY_URL } from '../lib/links';
 
 type Mode = 'signin' | 'signup' | 'forgot';
 
@@ -12,7 +13,12 @@ export function AuthScreen() {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('deleted')) return null;
+    window.history.replaceState(null, '', window.location.pathname);
+    return 'Your account has been deleted.';
+  });
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -84,6 +90,10 @@ export function AuthScreen() {
               <span aria-hidden>📱</span>
               <span>Already play on iPhone? Sign in with the <b>same email</b> — your level, stats and subscription come with you.</span>
             </div>
+            <p className="legal">
+              {mode === 'signup' ? 'By creating an account you agree to our ' : 'See our '}
+              <a href={PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer">Privacy Policy</a>.
+            </p>
           </form>
         </div>
       </div>
