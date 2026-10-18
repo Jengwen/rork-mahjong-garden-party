@@ -81,6 +81,7 @@ struct HomeView: View {
                 // moment right after an accidental close/relaunch.
                 if phase == .active {
                     Task { await onlineVM.refreshResumableGame() }
+                    Task { await appViewModel.refreshFromServerOnForeground() }
                 }
             }
             .onChange(of: showGameBoard) { _, isShowing in

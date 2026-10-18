@@ -107,13 +107,40 @@ class AppViewModel {
         saveProfileLocally()
 
         Task {
-            await saveGameResult(
-                result: result.rawValue,
-                score: score,
-                opponents: opponents,
-                mode: gameMode
-            )
-            await syncProfileToSupabase()
+            // Preferred: atomic server-side increment (record_game_result RPC), then
+            // adopt the server's totals — which also folds in games played on the
+            // web app since this device last synced. Falls back to the original
+            // insert + full-profile upsert if the RPC isn't deployed yet.
+            if await recordGameResultOnServer(result: result.rawValue, score: score, opponents: opponents, mode: gameMode) {
+                await loadProfileFromSupabase()
+            } else {
+                await saveGameResult(
+                    result: result.rawValue,
+                    score: score,
+                    opponents: opponents,
+                    mode: gameMode
+                )
+                await syncProfileToSupabase()
+            }
+        }
+    }
+
+    private func recordGameResultOnServer(result: String, score: Int, opponents: [String], mode: String) async -> Bool {
+        guard supabase.currentUserId != nil else { return false }
+        nonisolated struct Params: Encodable, Sendable {
+            let p_result: String
+            let p_score: Int
+            let p_opponents: [String]
+            let p_mode: String
+        }
+        do {
+            try await supabase.client
+                .rpc("record_game_result", params: Params(p_result: result, p_score: score, p_opponents: opponents, p_mode: mode))
+                .execute()
+            return true
+        } catch {
+            print("ℹ️ record_game_result RPC unavailable, using legacy sync: \(error)")
+            return false
         }
     }
 
@@ -261,6 +288,9 @@ class AppViewModel {
             await loadProfileFromSupabase()
             await loadMatchesFromSupabase()
             databaseStatus = await supabase.checkDatabaseSetup()
+            // Link this device's App Store subscription to the account and pick up
+            // any subscription bought on the web (StoreManager ran before auth).
+            await StoreManager.shared.refreshPurchasedProducts()
             await NotificationService.requestPermission()
         }
         isCheckingAuth = false
@@ -273,13 +303,25 @@ class AppViewModel {
             await loadProfileFromSupabase()
             await loadMatchesFromSupabase()
             databaseStatus = await supabase.checkDatabaseSetup()
+            await StoreManager.shared.refreshPurchasedProducts()
             await NotificationService.requestPermission()
         }
+    }
+
+    /// Called when the app returns to the foreground: adopt stats/level earned on
+    /// the web app (or another device) so a later local sync can't overwrite them,
+    /// and re-check web subscriptions.
+    func refreshFromServerOnForeground() async {
+        guard isAuthenticated else { return }
+        await loadProfileFromSupabase()
+        await loadMatchesFromSupabase()
+        await StoreManager.shared.refreshServerEntitlement()
     }
 
     func signOut() async {
         do {
             try await supabase.signOut()
+            StoreManager.shared.serverEntitled = false
             isAuthenticated = false
             playerProfile = PlayerProfile()
             syncError = nil
@@ -383,8 +425,16 @@ class AppViewModel {
     private func loadProfileFromSupabase() async {
         do {
             if let profile = try await supabase.fetchPlayerProfile() {
-                let remoteProfile = profile.toPlayerProfile()
+                var remoteProfile = profile.toPlayerProfile()
                 if remoteProfile.totalGames >= playerProfile.totalGames {
+                    // The live player_profiles table has no unlocked_achievements or
+                    // best_streak columns (upserts fall back to core fields), so the
+                    // remote copy always decodes them as empty/0. Keep the device's
+                    // values rather than wiping them every time we adopt the server's
+                    // stats — previously this happened on every launch, and the next
+                    // achievement save then persisted the loss.
+                    remoteProfile.unlockedAchievements.merge(playerProfile.unlockedAchievements) { remote, _ in remote }
+                    remoteProfile.bestStreak = max(remoteProfile.bestStreak, playerProfile.bestStreak, remoteProfile.currentStreak)
                     playerProfile = remoteProfile
                 }
                 saveProfileLocally()

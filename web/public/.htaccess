@@ -1,0 +1,25 @@
+# Mahjong Garden Party web — Apache (cPanel) settings
+Options -Indexes
+
+# Always fetch a fresh index.html so new deploys show up immediately
+<Files "index.html">
+  Header set Cache-Control "no-cache"
+</Files>
+
+# Hashed build assets and art can be cached for a long time
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresByType text/javascript "access plus 1 year"
+  ExpiresByType application/javascript "access plus 1 year"
+  ExpiresByType text/css "access plus 1 year"
+  ExpiresByType image/webp "access plus 30 days"
+  ExpiresByType image/png "access plus 30 days"
+</IfModule>
+
+AddType image/webp .webp
+AddType application/manifest+json .webmanifest
+
+# Force HTTPS
+RewriteEngine On
+RewriteCond %{HTTPS} !=on
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
