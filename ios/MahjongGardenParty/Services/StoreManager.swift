@@ -1,5 +1,6 @@
 import Foundation
 import StoreKit
+import Supabase
 
 @Observable
 final class StoreManager {
