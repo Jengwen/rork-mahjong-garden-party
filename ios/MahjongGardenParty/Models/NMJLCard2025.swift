@@ -823,7 +823,7 @@ extension NMJLCard {
             name: "Winds & Dragons #1",
             groups: [
                 HandGroup(count: 4, tile: .wind(value: 4)),
-                HandGroup(count: 2, tile: .wind(value: 1)),
+                HandGroup(count: 3, tile: .wind(value: 1)),
                 HandGroup(count: 3, tile: .wind(value: 3)),
                 HandGroup(count: 4, tile: .wind(value: 2)),
             ],
@@ -924,7 +924,7 @@ extension NMJLCard {
             name: "Winds & Dragons #7",
             groups: [
                 HandGroup(count: 2, tile: .wind(value: 4)),
-                HandGroup(count: 2, tile: .wind(value: 1)),
+                HandGroup(count: 3, tile: .wind(value: 1)),
                 HandGroup(count: 3, tile: .wind(value: 3)),
                 HandGroup(count: 2, tile: .wind(value: 2)),
                 HandGroup(count: 1, tile: .anySuit(slot: 1, value: 2)),
@@ -1475,7 +1475,7 @@ extension NMJLCard {
             category: "Quints",
             name: "Quints #2",
             groups: [
-                HandGroup(count: 4, tile: .flower),
+                HandGroup(count: 2, tile: .flower),
                 HandGroup(count: 5, tile: .anySuit(slot: 1, value: start)),
                 HandGroup(count: 2, tile: .anySuit(slot: 1, value: start + 1)),
                 HandGroup(count: 5, tile: .anySuit(slot: 1, value: start + 2)),
