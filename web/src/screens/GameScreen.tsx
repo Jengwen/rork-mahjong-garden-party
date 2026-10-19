@@ -359,6 +359,7 @@ function Board({ game, s, settings, sheetOpen, onLeave, onHands, onCard, onPlayA
           <button className="btn btn-gold" disabled={!(myTurn && s.hasDrawnThisTurn)} onClick={() => game.declareMahjong()}>Mahjong!<kbd>M</kbd></button>
           <button className="btn btn-ghost" disabled={!game.hasJokerSwapAvailable(s) || s.showCallTileSelection} onClick={() => game.startJokerSwap()}>Joker swap</button>
           {manualCall && <button className="btn btn-ghost" onClick={() => game.expandManualCall()}>Call with jokers…</button>}
+          {manualCall && <button className="btn btn-quiet" onClick={() => game.dismissCallOptions()}>Skip call<kbd>Esc</kbd></button>}
           {!settings.autoSortHand && <button className="btn btn-quiet" onClick={() => game.sortHand()}>Sort<kbd>S</kbd></button>}
         </div>
         {!myTurn && s.status === 'playing' && !s.callAvailable && <div className="muted" style={{ fontSize: 13, fontWeight: 700 }}>{turnName}’s turn</div>}
