@@ -6,7 +6,7 @@ import { CARD_YEARS } from '../engine/cards';
 import type { CardYear } from '../engine/types';
 import type { Access } from '../lib/entitlements';
 import { openBillingPortal } from '../lib/entitlements';
-import { fetchRecentResults, updateProfile, xpForNextLevel } from '../lib/profile';
+import { fetchRecentResults, xpForNextLevel } from '../lib/profile';
 import { PRIVACY_POLICY_URL } from '../lib/links';
 import type { GameResultRow, Profile } from '../lib/profile';
 import { supabase } from '../lib/supabase';
@@ -30,7 +30,7 @@ function timeAgo(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-export function HomeScreen({ profile, access, onProfile, onRefreshAccess, onPlay, onOpenProfile, checkoutReturn }: Props) {
+export function HomeScreen({ profile, access, onRefreshAccess, onPlay, onOpenProfile, checkoutReturn }: Props) {
   const [year, setYear] = useState<CardYear>(() => (localStorageGet('mgp_card_year') as CardYear) || '2026');
   const [results, setResults] = useState<GameResultRow[] | null>(null);
   const [paywall, setPaywall] = useState(false);
@@ -48,11 +48,6 @@ export function HomeScreen({ profile, access, onProfile, onRefreshAccess, onPlay
 
   function choose(y: CardYear) { setYear(y); localStorageSet('mgp_card_year', y); }
 
-  async function toggle(key: 'autoSortHand' | 'confirmDiscards') {
-    const next = !profile.settings_data[key];
-    onProfile({ ...profile, settings_data: { ...profile.settings_data, [key]: next } });
-    try { onProfile(await updateProfile(profile.user_id, { settings: { [key]: next } })); } catch { /* keep optimistic */ }
-  }
 
   return (
     <div className="page garden-bg">
@@ -99,7 +94,6 @@ export function HomeScreen({ profile, access, onProfile, onRefreshAccess, onPlay
           </section>
 
           <section className="card soon">
-            <div className="ico">👯</div>
             <div><b>Live multiplayer</b><div className="muted" style={{ fontSize: 14 }}>Coming soon — we’re putting the finishing touches on it.</div></div>
           </section>
         </div>
@@ -116,12 +110,6 @@ export function HomeScreen({ profile, access, onProfile, onRefreshAccess, onPlay
                 <span className="muted" style={{ fontSize: 12 }}>{timeAgo(r.played_at)}</span>
               </div>
             ))}
-          </section>
-
-          <section className="card panel">
-            <h3 className="section-title">Table settings</h3>
-            <div className="toggle-row">Auto-sort hand<button className={`switch${profile.settings_data.autoSortHand ? ' on' : ''}`} aria-pressed={profile.settings_data.autoSortHand} aria-label="Auto-sort hand" onClick={() => toggle('autoSortHand')} /></div>
-            <div className="toggle-row">Confirm discards<button className={`switch${profile.settings_data.confirmDiscards ? ' on' : ''}`} aria-pressed={profile.settings_data.confirmDiscards} aria-label="Confirm discards" onClick={() => toggle('confirmDiscards')} /></div>
           </section>
 
           <section className="card panel">
