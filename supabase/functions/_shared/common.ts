@@ -7,15 +7,23 @@ const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
 /** Comma-separated origins allowed to call browser-facing functions, e.g. "https://play.mahjonggardenparty.com". */
+// Entries are normalized to a bare origin, so "https://play.example.com/" or a pasted
+// page URL ("https://play.example.com/index.html") still match the browser's Origin.
+function toOrigin(s: string): string {
+  try { return new URL(s.trim()).origin.toLowerCase(); } catch { return s.trim().replace(/\/+$/, "").toLowerCase(); }
+}
 const ALLOWED_ORIGINS = (Deno.env.get("WEB_APP_ORIGINS") ?? "")
-  .split(",").map((s) => s.trim()).filter(Boolean);
+  .split(",").map(toOrigin).filter(Boolean);
 
 export function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("origin") ?? "";
-  const allow = ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin) ? (origin || "*") : ALLOWED_ORIGINS[0];
+  const ok = ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin.toLowerCase());
+  if (!ok && origin) console.warn(`CORS: origin ${origin} is not in WEB_APP_ORIGINS (${ALLOWED_ORIGINS.join(", ")})`);
+  const allow = ok ? (origin || "*") : ALLOWED_ORIGINS[0];
   return {
     "access-control-allow-origin": allow,
-    "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
+    // Kept in sync with @supabase/supabase-js/cors (headers the SDK may send).
+    "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-retry-count, x-region, traceparent, tracestate, baggage",
     "access-control-allow-methods": "POST, OPTIONS",
     "vary": "origin",
   };
@@ -30,7 +38,9 @@ export function isAllowedReturnUrl(url: unknown): url is string {
   try {
     const u = new URL(url);
     if (ALLOWED_ORIGINS.length === 0) return u.protocol === "https:" || u.hostname === "localhost";
-    return ALLOWED_ORIGINS.includes(u.origin);
+    const ok = ALLOWED_ORIGINS.includes(u.origin.toLowerCase());
+    if (!ok) console.warn(`Return URL ${u.origin} is not in WEB_APP_ORIGINS (${ALLOWED_ORIGINS.join(", ")})`);
+    return ok;
   } catch {
     return false;
   }

@@ -41,26 +41,43 @@ export function CardReference({ year }: { year: CardYear }) {
   );
 }
 
-/** Closest hands to the player's current tiles — port of SuggestedHandsView's analysis. */
+/**
+ * Every hand still possible with the player's tiles, fewest tiles needed first.
+ * Hands that are impossible (concealed, or clashing with exposed sets) are left out.
+ * Number-run variants of one card line ("FF 11111 22 33333", "FF 22222 33 44444", …)
+ * collapse to the player's closest one; distinct lines that share a name (a/b) stay.
+ */
 export function SuggestedHands({ hand, exposed, year }: { hand: Tile[]; exposed: Tile[][]; year: CardYear }) {
   const analysis = useMemo(() => {
     const seen = new Set<string>();
-    return analyzeAllHands(hand, exposed, cardForYear(year)).filter((a) => {
-      if (seen.has(a.hand.name)) return false;
-      seen.add(a.hand.name);
-      return true;
-    }).slice(0, 8);
+    return analyzeAllHands(hand, exposed, cardForYear(year))
+      .map((a, i) => ({ a, i }))
+      // Fewest tiles needed first; ties go to the higher-scoring hand, then card order.
+      .sort((x, y) => x.a.tilesNeeded - y.a.tilesNeeded || y.a.hand.points - x.a.hand.points || x.i - y.i)
+      .map((x) => x.a)
+      .filter((a) => {
+        const key = `${a.hand.name}|${a.hand.id.replace(/_\d+$/, '')}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
   }, [hand, exposed, year]);
 
   if (!analysis.length) return <p className="muted">No hands on the card fit your exposures.</p>;
   return (
     <div>
+      <p className="muted" style={{ margin: '0 0 4px', fontSize: 13 }}>
+        {analysis.length} possible hand{analysis.length === 1 ? '' : 's'}, fewest tiles needed first.
+      </p>
       {analysis.map((a) => (
         <div key={a.hand.id} className="suggest">
           <div className="row">
             <b style={{ fontSize: 14 }}>{a.hand.name}</b>
             {a.hand.concealed && <span className="conc">C</span>}
             <span className="spacer" />
+            <span className={`need-badge${a.tilesNeeded === 0 ? ' ready' : ''}`}>
+              {a.tilesNeeded === 0 ? 'Ready!' : `Need ${a.tilesNeeded}`}
+            </span>
             <span className="pts">{a.tilesHave}/{a.totalTiles} · {a.hand.points} pts</span>
           </div>
           <HandRow hand={a.hand} />
