@@ -19,6 +19,7 @@ interface Props {
   onRefreshAccess: () => Promise<void>;
   onPlay: (year: CardYear) => void;
   onOpenProfile: () => void;
+  onOpenLearn: () => void;
   checkoutReturn: 'success' | 'cancel' | null;
 }
 
@@ -30,7 +31,7 @@ function timeAgo(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-export function HomeScreen({ profile, access, onRefreshAccess, onPlay, onOpenProfile, checkoutReturn }: Props) {
+export function HomeScreen({ profile, access, onRefreshAccess, onPlay, onOpenProfile, onOpenLearn, checkoutReturn }: Props) {
   const [year, setYear] = useState<CardYear>(() => (localStorageGet('mgp_card_year') as CardYear) || '2026');
   const [results, setResults] = useState<GameResultRow[] | null>(null);
   const [paywall, setPaywall] = useState(false);
@@ -54,6 +55,7 @@ export function HomeScreen({ profile, access, onRefreshAccess, onPlay, onOpenPro
       <header className="topbar">
         <div className="brand"><img src="/icon-192.png" alt="" />Mahjong Garden Party</div>
         <div className="spacer" />
+        <button className="btn btn-quiet btn-sm" onClick={onOpenLearn}>Learn</button>
         <button className="btn btn-quiet btn-sm" onClick={() => setShowCard(true)}>NMJL card</button>
         <button className="btn btn-quiet btn-sm" onClick={onOpenProfile}>Account</button>
         <button className="btn btn-ghost btn-sm" onClick={() => supabase.auth.signOut()}>Sign out</button>
@@ -92,6 +94,12 @@ export function HomeScreen({ profile, access, onRefreshAccess, onPlay, onOpenPro
               ? <button className="btn btn-gold btn-lg" onClick={() => onPlay(year)}>Start game ▸</button>
               : <button className="btn btn-gold btn-lg" onClick={() => setPaywall(true)}>🔒 Unlock to play</button>}
           </section>
+
+          <button className="card learn-card" onClick={onOpenLearn}>
+            <span className="video-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 5.5c2.5-1.3 6-1.3 10 .8 4-2.1 7.5-2.1 10-.8v13c-2.5-1.3-6-1.3-10 .8-4-2.1-7.5-2.1-10-.8z" /><path d="M12 6.3v13" /></svg></span>
+            <span style={{ flex: 1 }}><b>Learn to Play</b><span className="muted" style={{ display: 'block', fontSize: 14 }}>Videos, tips and a guide to every tile</span></span>
+            <span className="muted" aria-hidden="true">›</span>
+          </button>
 
           <section className="card soon">
             <div><b>Live multiplayer</b><div className="muted" style={{ fontSize: 14 }}>Coming soon — we’re putting the finishing touches on it.</div></div>

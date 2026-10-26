@@ -10,6 +10,7 @@ import { AuthScreen, ResetPasswordScreen } from './screens/AuthScreen';
 import { GameScreen } from './screens/GameScreen';
 import type { FinishedGame } from './screens/GameScreen';
 import { HomeScreen } from './screens/HomeScreen';
+import { LearnScreen } from './screens/LearnScreen';
 import { ProfileScreen } from './screens/ProfileScreen';
 
 function readCheckoutParam(): 'success' | 'cancel' | null {
@@ -33,12 +34,14 @@ function PreviewApp() {
     unlocked_themes: ['garden_party'], unlocked_tile_sets: ['classic'],
     settings_data: { ...DEFAULT_SETTINGS },
   });
+  const [showLearn, setShowLearn] = useState(() => new URLSearchParams(window.location.search).has('learn'));
   const locked = new URLSearchParams(window.location.search).has('locked');
   const access: Access = { active: !locked, entitlements: locked ? [] : [{ source: 'app_store', product_id: 'mgg_annual', status: 'active', expires_at: null, will_renew: true }] };
   if (new URLSearchParams(window.location.search).has('auth')) return <AuthScreen />;
   if (showProfile) return <ProfileScreen profile={profile} access={access} onProfile={setProfile} onBack={() => setShowProfile(false)} preview />;
+  if (showLearn) return <LearnScreen onBack={() => setShowLearn(false)} />;
   if (playing) return <GameScreen playerName={profile.display_name} avatar={profile.avatar_image} cardYear={playing} settings={profile.settings_data} onFinished={() => {}} onExit={() => setPlaying(null)} speed={Number(new URLSearchParams(window.location.search).get('speed') ?? 1)} />;
-  return <HomeScreen profile={profile} access={access} onProfile={setProfile} onRefreshAccess={async () => {}} onPlay={setPlaying} onOpenProfile={() => setShowProfile(true)} checkoutReturn={null} />;
+  return <HomeScreen profile={profile} access={access} onProfile={setProfile} onRefreshAccess={async () => {}} onPlay={setPlaying} onOpenProfile={() => setShowProfile(true)} onOpenLearn={() => setShowLearn(true)} checkoutReturn={null} />;
 }
 
 export default function App() {
@@ -54,6 +57,7 @@ function RealApp() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [playing, setPlaying] = useState<CardYear | null>(null);
   const [showProfile, setShowProfile] = useState(false);
+  const [showLearn, setShowLearn] = useState(false);
   const [checkoutReturn] = useState(readCheckoutParam);
 
   useEffect(() => {
@@ -88,7 +92,7 @@ function RealApp() {
   }, [session, refreshAccess]);
 
   useEffect(() => {
-    if (!userId) { setProfile(null); setPlaying(null); setShowProfile(false); return; }
+    if (!userId) { setProfile(null); setPlaying(null); setShowProfile(false); setShowLearn(false); return; }
     loadUser();
   }, [userId, loadUser]);
 
@@ -143,6 +147,8 @@ function RealApp() {
     return <ProfileScreen profile={profile} access={access} onProfile={setProfile} onBack={() => setShowProfile(false)} />;
   }
 
+  if (showLearn) return <LearnScreen onBack={() => setShowLearn(false)} />;
+
   return (
     <HomeScreen
       profile={profile}
@@ -151,6 +157,7 @@ function RealApp() {
       onRefreshAccess={refreshAccess}
       onPlay={setPlaying}
       onOpenProfile={() => setShowProfile(true)}
+      onOpenLearn={() => setShowLearn(true)}
       checkoutReturn={checkoutReturn}
     />
   );

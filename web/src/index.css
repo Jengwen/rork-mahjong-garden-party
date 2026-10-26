@@ -325,3 +325,31 @@ kbd { font-family: ui-monospace, monospace; font-size: 11px; padding: 1px 5px; b
 .legal { margin: 0; font-size: 13px; color: var(--ink-soft); text-align: center; }
 .legal a { color: var(--teal-deep); font-weight: 700; }
 @media (max-width: 640px) { .two-col { grid-template-columns: 1fr; } .account { padding: 4px 16px 48px; } .topbar .brand { display: none; } }
+
+/* Learn to Play */
+.learn { width: 100%; max-width: 860px; margin: 0 auto; padding: 4px 28px 56px; display: flex; flex-direction: column; gap: 18px; }
+.learn-head p { margin: 0; font-size: 15px; }
+.video-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.video-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--line); color: inherit; text-decoration: none; transition: background .15s, border-color .15s; }
+.video-card:hover { background: rgba(11,107,90,.05); border-color: rgba(11,107,90,.3); }
+.video-ico { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: var(--teal); color: #fff; flex: none; }
+.video-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.video-text b { font-size: 14px; }
+.video-text span { font-size: 13px; color: var(--ink-soft); }
+.video-go { color: var(--teal); font-weight: 900; }
+.tips { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; font-size: 15px; }
+.tips li::marker { color: var(--teal); font-weight: 900; }
+.guide-row { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); }
+.guide-label { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.guide-label span { font-size: 13px; color: var(--ink-soft); }
+.guide-tiles { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.guide-sep { width: 10px; }
+.guide-note { font-size: 13px; color: var(--ink-soft); margin-left: 8px; max-width: 420px; }
+.guide-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 14px; }
+.guide-table td { padding: 6px 0; border-top: 1px solid var(--line); }
+.guide-table td:last-child { text-align: right; font-weight: 800; }
+.guide-table tr.total td { font-weight: 900; color: var(--teal-deep); }
+.learn-card { display: flex; align-items: center; gap: 14px; padding: 16px 20px; width: 100%; text-align: left; border: none; cursor: pointer; font: inherit; color: inherit; }
+.learn-card:hover { box-shadow: 0 10px 30px rgba(0,0,0,.08); }
+.learn-card .video-ico { background: var(--pink); }
+@media (max-width: 720px) { .video-grid { grid-template-columns: 1fr; } .learn { padding: 4px 16px 40px; } }
