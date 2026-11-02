@@ -36,8 +36,6 @@ Deno.serve(async (req) => {
   const db = admin();
   const { data: rows } = await db.from("user_entitlements").select("user_id")
     .eq("original_transaction_id", originalTransactionId).limit(1);
-  // Not linked to any account yet: the app will link it on next launch via app-store-sync.
-  if (!rows?.length) return new Response("ok", { status: 200 });
 
   let state;
   try {
@@ -45,6 +43,34 @@ Deno.serve(async (req) => {
   } catch (e) {
     console.error("app-store-notifications: Apple API error", e);
     return new Response("Retry later", { status: 500 }); // Apple retries on non-2xx
+  }
+
+  // Not linked to any account yet. If the purchase was tagged with the buyer's
+  // Supabase id (appAccountToken, set by StoreManager.purchase), link it now so
+  // web access starts the moment the trial begins. Otherwise the app links it on
+  // next launch via app-store-sync.
+  if (!rows?.length) {
+    const uid = state?.appAccountToken?.toLowerCase() ?? "";
+    if (!state || !/^[0-9a-f-]{36}$/.test(uid)) return new Response("ok", { status: 200 });
+    const { data: user } = await db.auth.admin.getUserById(uid);
+    if (!user?.user) return new Response("ok", { status: 200 });
+    const { error } = await db.from("user_entitlements").upsert({
+      user_id: uid,
+      source: "app_store",
+      product_id: state.productId,
+      status: state.status,
+      expires_at: state.expiresAt,
+      will_renew: state.willRenew,
+      original_transaction_id: state.originalTransactionId,
+      environment: state.environment,
+      had_trial: true,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id,source" });
+    if (error) {
+      console.error("app-store-notifications: link failed", error);
+      return new Response("Retry later", { status: 500 });
+    }
+    return new Response("ok", { status: 200 });
   }
 
   const update = state
